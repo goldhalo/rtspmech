@@ -1,0 +1,20 @@
+# 构建产物
+build/
+build-*/
+out/
+bin/
+lib/
+obj/
+x64/
+Debug/
+Release/
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# 临时调试文件
+dbg*.cpp
+
+# 注意：thirdparty/picohttpparser 和 thirdparty/netmech 必须提交

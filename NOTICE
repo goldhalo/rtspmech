@@ -1,0 +1,50 @@
+# NOTICE — 第三方声明
+
+---
+
+## 1. picohttpparser
+
+| 项 | 内容 |
+|---|---|
+| 项目地址 | https://github.com/h2o/picohttpparser |
+| 版权人 | Copyright (c) 2009-2014 Kazuho Oku, Tokuhiro Matsuno, Daisuke Murase, Shigeo Mitsunari |
+| 许可证 | MIT 或 Perl（双许可，本项选择 MIT） |
+
+**使用方式**：源码 vendored 到 `thirdparty/picohttpparser/`（`picohttpparser.c` +
+`picohttpparser.h`），**未做修改**。完整许可声明见源文件头部。
+
+作用：解析 RTSP 的请求行 / 状态行 / 头部。RTSP 的 `RTSP/1.0` 会被本库在解析前
+原地替换成 `HTTP/1.0` 以通过其版本校验（两者长度相同，不改结构）。
+
+---
+
+## 2. Asio
+
+| 项 | 内容 |
+|---|---|
+| 项目地址 | https://github.com/chriskohlhoff/asio |
+| 许可证 | Boost Software License 1.0 |
+
+通过 `thirdparty/netmech` 间接引用。
+
+---
+
+## 3. NetMechanism（netmech）
+
+| 项 | 内容 |
+|---|---|
+| 项目地址 | 同级目录 `../netmech`（git submodule） |
+| 许可证 | MIT |
+| 关系 | 提供 TCP 传输、io 线程模型、`Conn` / `ConnHandler` / `Linkable` |
+
+rtspmech 的 `RtspSession` 直接实现 netmech 的 `ConnHandler`，读循环、
+发送语义（"受理 / 未受理"）都继承自它。
+
+---
+
+## 4. 协议参考
+
+RTSP 的实现依据 **RFC 2326**（RTSP 1.0）与 **RFC 3550**（RTP/RTCP）。
+这两个是公开标准，不涉及代码许可。
+
+`interleaved=0` 隐含 `ch2 = ch1 + 1` 的语义来自 RFC 2326 §12.39。
