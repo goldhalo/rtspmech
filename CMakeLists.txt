@@ -37,6 +37,10 @@ set(RTSPMECH_NETMECH_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/netmech"
     CACHE PATH "netmech 所在目录（默认使用 git submodule）")
 
+set(RTSPMECH_RTPMECH_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtpmech"
+    CACHE PATH "rtpmech 所在目录（可选，仅 rtsp_server 示例需要）")
+
 if(NOT EXISTS "${RTSPMECH_NETMECH_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "找不到 netmech：${RTSPMECH_NETMECH_DIR}\n"
@@ -124,8 +128,32 @@ endif()
 if(RTSPMECH_BUILD_EXAMPLES)
     file(GLOB RTSPMECH_EXAMPLE_SOURCES CONFIGURE_DEPENDS
          "${CMAKE_CURRENT_SOURCE_DIR}/example/*.cpp")
+
     foreach(src ${RTSPMECH_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)
+
+        # rtsp_server 依赖 rtpmech（H264Packetizer）；没有 rtpmech 就跳过它
+        if(name STREQUAL "rtsp_server")
+            if(NOT EXISTS "${RTSPMECH_RTPMECH_DIR}/include/rtpmech/rtp_packet.hpp")
+                message(STATUS "跳过 rtsp_server 示例（未找到 rtpmech：${RTSPMECH_RTPMECH_DIR}）")
+                continue()
+            endif()
+            # 直接把 rtpmech 用到的几个源文件编进来（不引入它的完整工程，
+            # 否则会重复 add_subdirectory(netmech)）。
+            # h264.cpp / rtp_packet.cpp / error.cpp 都不依赖 netmech。
+            add_executable(${name} ${src}
+                "${RTSPMECH_RTPMECH_DIR}/src/h264.cpp"
+                "${RTSPMECH_RTPMECH_DIR}/src/h265.cpp"
+                "${RTSPMECH_RTPMECH_DIR}/src/rtp_packet.cpp"
+                "${RTSPMECH_RTPMECH_DIR}/src/rtcp_packet.cpp"
+                "${RTSPMECH_RTPMECH_DIR}/src/error.cpp")
+            set_target_properties(${name} PROPERTIES FOLDER "rtspmech/example")
+            target_include_directories(${name} PRIVATE
+                "${RTSPMECH_RTPMECH_DIR}/include")
+            target_link_libraries(${name} PRIVATE rtspmech rtspmech_compile_options)
+            continue()
+        endif()
+
         add_executable(${name} ${src})
         set_target_properties(${name} PROPERTIES FOLDER "rtspmech/example")
         target_link_libraries(${name} PRIVATE rtspmech rtspmech_compile_options)
