@@ -1,7 +1,7 @@
 // =============================================================================
 //  rtsp_relay —— RTSP 收流 + 转发（中转服务器）
 // =============================================================================
-//  用法：rtsp_relay [端口]
+//  用法：rtsp_relay [端口=8554] [监听地址=0.0.0.0]
 //
 //  两个角色：
 //    * **收流端**：接 100 个推流客户端（ANNOUNCE → SETUP → RECORD）
@@ -281,8 +281,7 @@ public:
             reply(sess, req.cseq, ResponseBuilder(200, "OK")
                                 .header("Content-Type", "application/sdp")
                                 .header("Content-Base",
-                                        "rtsp://127.0.0.1:" + std::to_string(m_port) +
-                                            "/" + id + "/")
+                                        "rtsp://" + host_of(uri) + "/" + id + "/")
                                 .body(src->sdp()));
         } else if (method == "SETUP") {
             handle_setup(sess, req.cseq, req.transport, uri);
@@ -404,6 +403,22 @@ private:
         return idx;
     }
 
+    /// 从 URI 里取 host:port。
+    ///
+    /// `rtsp://1.2.3.4:8554/play/0` → `1.2.3.4:8554`
+    ///
+    /// 用来拼 Content-Base。**必须用请求里的地址**，不能写死：
+    /// 客户端可能是从公网映射进来的（1.2.3.4:8554），也可能是内网
+    /// （192.168.1.10:8554），写死任何一个都会让另一边的 SETUP 失败。
+    static std::string host_of(const std::string& uri)
+    {
+        const auto p = uri.find("://");
+        if (p == std::string::npos) { return {}; }
+        const auto b = p + 3;
+        const auto e = uri.find('/', b);
+        return uri.substr(b, (e == std::string::npos ? uri.size() : e) - b);
+    }
+
     /// 从 URI 里取流 ID。
     ///
     ///   `/push/12`              → `12`
@@ -494,8 +509,10 @@ private:
                 // 拉流端：记下它的 client_port 和源 IP，转发时用
                 std::lock_guard<std::mutex> lk(m_mtx);
                 auto it = m_session_ip.find(&sess);
+                // 用 TCP 连接的源地址（NAT 后面拿不到真实内网地址，
+                // 但这正是我们要发回去的地址）
                 const std::string ip =
-                    (it != m_session_ip.end()) ? it->second : "127.0.0.1";
+                    (it != m_session_ip.end()) ? it->second : "0.0.0.0";
                 m_player_udp[&sess] = {ip, t.client_rtp_port};
             }
 
@@ -708,6 +725,10 @@ int main(int argc, char** argv)
     const std::uint16_t port =
         (argc > 1) ? static_cast<std::uint16_t>(std::atoi(argv[1])) : 8554;
 
+    // 监听地址：默认所有接口（0.0.0.0）。公网映射/多网卡时可用第二个
+    // 参数指定，比如 `rtsp_relay 8554 192.168.1.10`。
+    const std::string bind_ip = (argc > 2) ? argv[2] : "0.0.0.0";
+
     if (!netmech::initialize(4)) {
         std::fprintf(stderr, "netmech initialize failed\n");
         return 1;
@@ -729,17 +750,20 @@ int main(int argc, char** argv)
 
     std::error_code ec;
     mech->set_linkable(relay);
-    if ((ec = mech->listen(Address{"0.0.0.0", port}, relay))) {
+    if ((ec = mech->listen(Address{bind_ip, port}, relay))) {
         std::fprintf(stderr, "listen: %s\n", ec.message().c_str());
         return 1;
     }
 
-    std::printf("[relay] 监听 rtsp://127.0.0.1:%u\n", port);
-    std::printf("[relay] 推流：rtsp://127.0.0.1:%u/push/<id>\n", port);
-    std::printf("[relay] 拉流：rtsp://127.0.0.1:%u/play/<id>\n", port);
+    std::printf("[relay] 监听 %s:%u\n", bind_ip.c_str(), port);
+    std::printf("[relay] 推流：rtsp://<本机地址>:%u/push/<id>\n", port);
+    std::printf("[relay] 拉流：rtsp://<本机地址>:%u/play/<id>\n", port);
+    std::printf("[relay] Content-Base 用请求里带的地址，不写死\n");
     std::printf("[relay] 每 5 秒打印一次统计\n\n");
 
-    for (int i = 0; i < 3600; ++i) {
+    // 一直跑，直到 Ctrl-C / 被 kill。
+    // （早先是 `i < 3600`，一小时就退出了，没法做长时间观测）
+    for (long i = 0; ; ++i) {
         std::this_thread::sleep_for(1s);
         if (i % 5 == 4) {
             std::printf("[relay] 连接 %zu，转发 %llu 包\n",

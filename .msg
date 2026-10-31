@@ -1,39 +1,36 @@
-fix: 关闭会话时的自析构崩溃 + 加断连重连测试
+feat: 无限运行 + 监听地址可配 + Windows 监控脚本
 
-上一版加了 on_close 清理后，churn 测试直接段错误。根因是**关闭过程中
-对象把自己析构掉了**：
+三个跟"长时间跑"相关的改动：
 
-  Impl::close() 是 Impl 的方法
-    → 回调 on_close
-    → 应用（relay）里把 session 从所有表里移除，引用计数归零
-    → RtspSession 析构 → Impl（它的成员）跟着析构
-    → close() 还在 Impl 的栈上跑，返回时访问已释放内存 → SIGSEGV
+1. relay / pusher 改成无限循环
+   早先是 `for (i = 0; i < 3600; ++i)`，跑一小时就自己退出了 —— 做
+   长时间观测时中途断掉，还得重来。改成一直跑到被 kill。
 
-修法是两层保活：
+2. relay 的监听地址可配 + Content-Base 不再写死
+   - 第二个命令行参数指定监听地址（默认 0.0.0.0）
+   - DESCRIBE 的 Content-Base 用**请求 URI 里的 host:port**，不再写死
+     127.0.0.1。公网映射 / 内网 / 多网卡三种场景下都能正确拼出地址。
 
-  RtspSession 继承 enable_shared_from_this
-  Impl::close() 里 weak_from_this().lock() 抓一份强引用
-  Impl 也继承 enable_shared_from_this，同样在 close() 里保活自己
+   这个很关键：写死 127.0.0.1 时，从公网映射进来的客户端拿到
+   `rtsp://127.0.0.1/0/`，SETUP 就找不到流了。
 
-  这样整个关闭过程中对象一定活着，清理动作可以放心做。
+3. 新增 example/win-soak.ps1
+   Windows 侧的长时间监控（工作集 / 私有字节 / 句柄 / 线程 / CPU）。
+   配合已有的 soak.sh（Linux）用。
 
-新增 example/churn.sh —— 断连重连压力测试：
-  每轮拉起 N 个 ffmpeg 拉流，D 秒后 kill -9（模拟异常断开，不发
-  TEARDOWN），再采样 relay 的 fd / RSS / 线程数。
+实测（100 路推流 + 转发，103 分钟，Windows relay + Linux pusher）：
 
-  这比单纯挂 24 小时更容易暴露问题：泄漏的会话表项只有在"连了又断"
-  的时候才会被触碰。之前 22 分钟的 soak（100 路一直连着）就没发现
-  这个 bug。
+  Windows relay
+    工作集  12.76 → 11.42 MB（下降）
+    私有    4.78 → 4.76 MB
+    句柄    259 → 253（下降）
+    CPU     6.7% 单核
 
-实测（10 路推流，15 轮 × 5 客户端 = 75 次连断）：
+  Linux pusher
+    RSS     7456 → 8232 KB
+    fd      116 → 116（零变化）
+    线程    5 → 5
 
-  基准   RSS 5468 KB, fd 32, 线程 9
-  15 轮后 RSS 5492 KB, fd 32, 线程 9
-
-  fd   : 32 → 32   (+0)          ← 零泄漏
-  RSS  : +24 KB     (1.6 KB/轮)
-  线程 : 9 → 9      (+0)
-
-顺带修了脚本的两个坑：pgrep -f 会连 bash 包装进程一起匹配（fd 只有 4，
-样本全错），改用 pgrep -x 按进程名 + 端口过滤；以及 CSV 表头多了一列
-port 导致汇总脚本崩。
+  RSS 的 "+7.5 KB/分" 是被启动期拉高的全过程均值。实际曲线：
+  前 10 分钟涨 696 KB（连接缓冲 + 内存池首次扩容），之后 93 分钟
+  只涨 80 KB（0.86 KB/分）—— 平台期，不是泄漏。

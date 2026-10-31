@@ -373,7 +373,8 @@ int main(int argc, char** argv)
     auto next = std::chrono::steady_clock::now();
     std::uint64_t total = 0;
 
-    for (int tick = 0; tick < kFps * 3600; ++tick) {   // 跑一小时
+    // 一直跑，直到 Ctrl-C / 被 kill。
+    for (long tick = 0; ; ++tick) {
         for (auto& ch : chans) {
             ch->tick();
         }
@@ -382,8 +383,9 @@ int main(int argc, char** argv)
 
         if (tick % (kFps * 5) == 0 && tick > 0) {
             for (auto& ch : chans) { total += ch->sent.exchange(0); }
-            std::printf("[pusher] %ds：累计发出 %llu 个 RTP 包\n",
-                        tick / kFps, static_cast<unsigned long long>(total));
+            std::printf("[pusher] %lds：累计发出 %llu 个 RTP 包\n",
+                        static_cast<long>(tick / kFps),
+                        static_cast<unsigned long long>(total));
             std::fflush(stdout);
         }
     }

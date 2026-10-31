@@ -1,5 +1,6 @@
 # 构建产物
 build/
+build-win/
 build-*/
 out/
 bin/
@@ -18,3 +19,6 @@ Release/
 dbg*.cpp
 
 # 注意：thirdparty/picohttpparser 和 thirdparty/netmech 必须提交
+
+# 博客草稿：跟开源项目本身无关，留本地
+blog/
