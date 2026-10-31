@@ -1,29 +1,31 @@
-refactor(relay): 信令处理走业务线程池
+test: 加长时间运行监控脚本 + 22 分钟观测结果
 
-按"io 线程只做收发、业务在业务线程"的分层改造：
+  example/soak.sh         每 N 秒采 RSS / fd / 线程数 → /tmp/soak.csv
+  example/soak_report.py  把 CSV 汇总成趋势表
 
-  on_request  → post_to(session_index, ...)  → WorkerPool 处理
-  on_interleaved（媒体转发）→ 仍在 io 线程
+观测条件：100 路推流（50 TCP + 50 UDP）+ 中转分发，单机回环。
 
-为什么信令要 post：
-  RTSP 的 on_request 在 io 线程上跑。现在只是解析 Transport、拷 SDP，
-  但一旦加上认证/鉴权/查库，就会卡住**所有连接**的收发（一个
-  io_context 只有一条线程）。
+22 分钟结果：
 
-为什么媒体不 post：
-  on_interleaved 只是"把包转给订阅者"，纯 IO、无阻塞。2 万包/秒时
-  线程跳转的代价可观，留在 io 线程延迟最低。
+  rtsp_relay（100 个推流连接 + 100 个 UDP 端口）
+    fd   167 → 170，第 6 分钟之后**纹丝不动**
+    线程 9 固定（4 io + 4 worker + 1 main）
+    RSS  6684 → 7056 KB，但第 6 分钟后 16 分钟只涨 20 KB
 
-保序：
-  用 post_to(session_index) —— 同一个会话的 OPTIONS → ANNOUNCE →
-  SETUP → RECORD 必须按序，WorkerPool 的每线程独立队列保证了这点。
+  rtsp_pusher（100 路客户端）
+    fd   166 → 166，完全稳定
+    线程 5 固定
+    RSS  7772 → 7940 KB（同样在启动期后进平台）
 
-跨线程数据：
-  RtspRequest 的字段都是借用视图，投递前必须拷成 OwnedRequest
-  （method/uri/cseq/transport/body）。
+  吞吐 2770 万包 / 1330 秒 = 20,835 包/秒
 
-实测（2 个进程：relay + pusher，100 路 = 50 TCP + 50 UDP）：
-  100 路全部 RECORD 成功
-  10 秒发出 209,296 个 RTP 包
-  拉 TCP 第 0 路 → ffmpeg 零错误
-  拉 UDP 第 70 路 → ffmpeg 零错误
+结论：22 分钟内没有泄漏迹象。启动期的 RSS 上涨是连接缓冲和内存池
+首次扩容，第 6 分钟后就进入平台期 —— 按那一小段的斜率外推 24h 会
+误判成"24 小时涨 100MB"。
+
+要确认 24 小时真的稳，需要让它一直跑：
+
+  ./build-linux/bin/rtsp_relay 8554 &
+  ./build-linux/bin/rtsp_pusher rtsp://127.0.0.1:8554 file.h264 100 --mixed &
+  ./example/soak.sh 60 &
+  # 隔天：python3 example/soak_report.py
