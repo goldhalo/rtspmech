@@ -115,12 +115,22 @@ public:
         m_subs.push_back(sub);
     }
 
-    void remove_subscriber(netmech::Conn* conn)
+    /// 移除一个订阅者（会话关闭时调用）。
+    void remove_subscriber(RtspSession* sess)
     {
         std::lock_guard<std::mutex> lk(m_mtx);
-        // 用 session 的 conn 指针不好比，这里简化为"会话关闭时整路清理"
-        // 生产实现应该给每个订阅者一个 id
-        (void)conn;
+        const auto before = m_subs.size();
+        m_subs.erase(std::remove_if(m_subs.begin(), m_subs.end(),
+                                    [sess](const Subscriber& s) {
+                                        return s.session == sess;
+                                    }),
+                     m_subs.end());
+        if (m_subs.size() != before) {
+            // 订阅者变了，UDP 出口也要跟着判断（没人订阅就放掉）
+            if (m_subs.empty()) {
+                m_udp_out.reset();
+            }
+        }
     }
 
     /// 设置 UDP 转发出口（所有 UDP 订阅者共用这一个 socket）。
@@ -314,12 +324,68 @@ public:
         }
     }
 
-    void on_close(std::error_code) override {}
+    /// 会话关闭：把它从**所有**表里清掉。
+    ///
+    /// 早先这里是空实现，导致：
+    ///   * m_sessions 只增不减（连接数一直涨）
+    ///   * 6 个 map<RtspSession*, ...> 累积失效的键（内存涨）
+    ///   * Source 的订阅者列表里留着已断开的会话 —— 转发时往死连接上发
+    ///     （send_interleaved 失败，但每包都白做一次）
+    void on_close(RtspSession& sess, std::error_code ec) override
+    {
+        (void)ec;
+
+        // 1) 从所有 Source 的订阅者里移除
+        {
+            std::vector<std::shared_ptr<Source>> srcs;
+            {
+                std::lock_guard<std::mutex> lk(m_mtx);
+                for (auto& kv : m_sources) {
+                    srcs.push_back(kv.second);
+                }
+            }
+            for (auto& src : srcs) {
+                src->remove_subscriber(&sess);
+            }
+        }
+
+        // 2) 从所有索引表里删除
+        std::size_t remaining = 0;
+        {
+            std::lock_guard<std::mutex> lk(m_mtx);
+            m_session_index.erase(&sess);
+            m_session_ids.erase(&sess);
+            m_session_stream.erase(&sess);
+            m_session_interleaved.erase(&sess);
+            m_session_channel.erase(&sess);
+            m_roles.erase(&sess);
+            m_session_ip.erase(&sess);
+            m_player_udp.erase(&sess);
+            m_pub_stream.erase(&sess);
+
+            // 3) 从 m_sessions 里摘掉（weak_ptr 失效的也顺手清掉）
+            for (auto it = m_sessions.begin(); it != m_sessions.end();) {
+                if (it->expired() || it->lock().get() == &sess) {
+                    it = m_sessions.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            remaining = m_sessions.size();
+        }
+
+        std::printf("[relay] 会话关闭，剩余 %zu 个连接\n", remaining);
+        std::fflush(stdout);
+    }
 
     std::size_t session_count() const
     {
         std::lock_guard<std::mutex> lk(m_mtx);
-        return m_sessions.size();
+        std::size_t n = 0;
+        for (const auto& w : m_sessions) {
+            if (!w.expired()) { ++n; }
+        }
+        return n;
     }
 
     std::uint64_t forwarded() const { return m_forwarded.load(); }
@@ -613,7 +679,12 @@ private:
     std::size_t                          m_next_session_index = 0;
     mutable std::mutex m_mtx;
     std::map<std::string, std::shared_ptr<Source>> m_sources;
-    std::vector<std::shared_ptr<RtspSession>>      m_sessions;
+    /// ★ 存 weak_ptr 而不是 shared_ptr。
+    ///
+    ///   session 的生命周期由 netmech::Conn 持有（它是 ConnHandler）。
+    ///   这里如果存 shared_ptr，session **永远不会析构** —— 连接数只增
+    ///   不减，内存一直涨。早先就是这么错的。
+    std::vector<std::weak_ptr<RtspSession>>        m_sessions;
     std::map<RtspSession*, std::string>            m_session_ids;
     std::map<RtspSession*, std::string>            m_session_stream;
     std::map<RtspSession*, bool>                   m_session_interleaved;

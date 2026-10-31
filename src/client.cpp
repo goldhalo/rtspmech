@@ -258,7 +258,7 @@ public:
         // 媒体由应用处理（这个类只管信令）
     }
 
-    void on_close(std::error_code ec) override
+    void on_close(RtspSession&, std::error_code ec) override
     {
         playing.store(false);
         if (handler) {

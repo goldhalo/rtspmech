@@ -214,7 +214,7 @@ public:
         }
     }
 
-    void on_close(std::error_code ec) override
+    void on_close(RtspSession&, std::error_code ec) override
     {
         if (ec) {
             std::printf("[client] 连接断开: %s\n", ec.message().c_str());

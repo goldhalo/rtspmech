@@ -172,7 +172,19 @@ public:
     }
 
     /// 连接关闭。恰好一次。
-    virtual void on_close(std::error_code ec) { (void)ec; }
+    ///
+    /// @param[in] sess 关闭的那个会话。
+    ///
+    /// @par 为什么带 session 参数
+    ///  一个 handler 经常被**多个会话共用**（比如中转服务器：所有客户端
+    ///  连同一个 handler）。没有这个参数的话，handler 无法知道"是哪个
+    ///  会话关了"，只能在表里累积失效的键 —— 内存涨、订阅者列表里留着
+    ///  已断开的会话，转发时往死连接上发。
+    virtual void on_close(RtspSession& sess, std::error_code ec)
+    {
+        (void)sess;
+        (void)ec;
+    }
 };
 
 // =============================================================================

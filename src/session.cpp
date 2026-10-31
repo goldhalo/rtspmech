@@ -105,7 +105,10 @@ public:
         }
         if (was_open) {
             if (auto h = m_handler.lock()) {
-                h->on_close(std::error_code{});
+                // 用 facade（外层 RtspSession），不是 Impl 自身
+                if (m_facade) {
+                    h->on_close(*m_facade, std::error_code{});
+                }
             }
         }
     }
