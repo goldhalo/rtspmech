@@ -97,14 +97,16 @@ public:
     std::string        session_id;
     std::string        sdp;
     std::uint16_t      server_rtp_port = 0;
+    std::uint16_t      server_rtcp_port = 0;
     std::uint16_t      client_rtp_port = 0;
+    std::atomic<bool>  recording{false};
 
     ParsedUrl          url;
     std::vector<std::string> tracks;
     std::size_t        track_index = 0;
     int                last_status = 0;
 
-    enum class Step { options, describe, setup, play, done };
+    enum class Step { options, describe, announce, setup, play, record, done };
     Step step = Step::options;
 
     // ---- netmech::Linkable ----
@@ -129,6 +131,13 @@ public:
 
     void on_ready(RtspSession& s) override
     {
+        // 推流模式没有 DESCRIBE，track 列表从自己的 SDP 里取（或默认一个）
+        if (cfg.mode == ClientMode::push) {
+            tracks = extract_controls(cfg.sdp);
+            if (tracks.empty()) {
+                tracks.emplace_back("trackID=0");
+            }
+        }
         RequestBuilder b("OPTIONS", cfg.url);
         s.send_request(b);
     }
@@ -151,12 +160,27 @@ public:
         switch (step) {
         case Step::options:
             if (resp.status != 200) { fail("OPTIONS", std::error_code{}, resp.status); return; }
-            step = Step::describe;
-            {
+            if (cfg.mode == ClientMode::push) {
+                // 推流：ANNOUNCE 带 SDP
+                step = Step::announce;
+                RequestBuilder b("ANNOUNCE", cfg.url);
+                b.header("Content-Type", "application/sdp");
+                b.body(cfg.sdp);
+                s.send_request(b);
+            } else {
+                // 拉流：DESCRIBE
+                step = Step::describe;
                 RequestBuilder b("DESCRIBE", cfg.url);
                 b.header("Accept", "application/sdp");
                 s.send_request(b);
             }
+            break;
+
+        case Step::announce:
+            if (resp.status != 200) { fail("ANNOUNCE", std::error_code{}, resp.status); return; }
+            step = Step::setup;
+            track_index = 0;
+            send_setup(s);
             break;
 
         case Step::describe:
@@ -177,7 +201,8 @@ public:
             RtspTransport t;
             if (parse_transport(resp.header("Transport"), t)) {
                 if (t.mode == TransportMode::udp) {
-                    server_rtp_port = t.server_rtp_port;
+                    server_rtp_port  = t.server_rtp_port;
+                    server_rtcp_port = t.server_rtcp_port;
                     if (client_rtp_port == 0) {
                         client_rtp_port = t.client_rtp_port;
                     }
@@ -190,7 +215,15 @@ public:
             ++track_index;
             if (track_index < tracks.size()) {
                 send_setup(s);
+            } else if (cfg.mode == ClientMode::push) {
+                // 推流：RECORD
+                step = Step::record;
+                RequestBuilder b("RECORD", cfg.url);
+                b.header("Session", session_id);
+                b.header("Range", "npt=0.000-");
+                s.send_request(b);
             } else {
+                // 拉流：PLAY
                 step = Step::play;
                 RequestBuilder b("PLAY", cfg.url);
                 b.header("Session", session_id);
@@ -199,6 +232,13 @@ public:
             }
             break;
         }
+
+        case Step::record:
+            if (resp.status != 200) { fail("RECORD", std::error_code{}, resp.status); return; }
+            recording.store(true);
+            step = Step::done;
+            if (handler) { handler->on_recording(facade()); }
+            break;
 
         case Step::play:
             if (resp.status != 200) { fail("PLAY", std::error_code{}, resp.status); return; }
@@ -361,6 +401,26 @@ const std::string& RtspClient::sdp() const noexcept
 std::uint16_t RtspClient::server_rtp_port() const noexcept
 {
     return m_impl ? m_impl->server_rtp_port : 0;
+}
+
+std::uint16_t RtspClient::server_udp_port() const noexcept
+{
+    return m_impl ? m_impl->server_rtp_port : 0;
+}
+
+std::uint16_t RtspClient::server_rtcp_port() const noexcept
+{
+    return m_impl ? m_impl->server_rtcp_port : 0;
+}
+
+bool RtspClient::is_recording() const noexcept
+{
+    return m_impl && m_impl->recording.load();
+}
+
+ClientMode RtspClient::mode() const noexcept
+{
+    return m_impl ? m_impl->cfg.mode : ClientMode::pull;
 }
 
 RtspSession* RtspClient::session() noexcept

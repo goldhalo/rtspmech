@@ -35,6 +35,14 @@ namespace rtspmech {
 
 class RtspClient;   // 前置声明（ClientHandler 里用到）
 
+/// 客户端的工作模式。
+enum class ClientMode {
+    /// 拉流：DESCRIBE → SETUP → PLAY。从服务端取流。
+    pull,
+    /// 推流：ANNOUNCE → SETUP → RECORD。往服务端送流。
+    push,
+};
+
 /// 客户端的传输方式偏好。
 enum class TransportPreference {
     /// `RTP/AVP;unicast;client_port=...` —— 媒体走独立 UDP 端口。
@@ -48,8 +56,11 @@ class ClientHandler {
 public:
     virtual ~ClientHandler() = default;
 
-    /// 流程完成（PLAY 成功）。
+    /// 拉流完成（PLAY 成功）。
     virtual void on_playing(RtspClient&) {}
+
+    /// 推流完成（RECORD 成功）—— 可以开始发 RTP 了。
+    virtual void on_recording(RtspClient&) {}
 
     /// 流程失败。
     ///
@@ -70,8 +81,20 @@ public:
 class RtspClient : public std::enable_shared_from_this<RtspClient> {
 public:
     struct Config {
-        /// 要拉的流地址（`rtsp://host:port/path`）。
+        /// 工作模式。
+        ClientMode mode = ClientMode::pull;
+
+        /// 流地址（`rtsp://host:port/path`）。
+        ///
+        /// @note 推流模式下，**每路必须用不同的 URL**——服务端靠它区分不同
+        ///       的源，分发时也靠它定位。
         std::string url;
+
+        /// 推流模式的 SDP（`mode == push` 时必填）。
+        ///
+        /// @note 这是**客户端告诉服务端"我要推什么"**，不是服务端返回的。
+        ///       内容至少要有 `m=video 0 RTP/AVP 96` + `a=rtpmap:96 H264/90000`。
+        std::string sdp;
 
         /// 传输偏好。
         TransportPreference transport = TransportPreference::udp;
@@ -97,12 +120,23 @@ public:
     // ---- 查询 ----
 
     [[nodiscard]] bool         is_playing() const noexcept;
+    /// 推流模式下 RECORD 是否成功。
+    [[nodiscard]] bool         is_recording() const noexcept;
+    [[nodiscard]] ClientMode   mode() const noexcept;
     [[nodiscard]] const std::string& session_id() const noexcept;
     [[nodiscard]] const std::string& sdp() const noexcept;
     [[nodiscard]] std::uint16_t server_rtp_port() const noexcept;
 
     /// 拿到底层会话（发 TEARDOWN、发媒体用）。
     [[nodiscard]] RtspSession* session() noexcept;
+
+    /// 推流模式下：服务端告诉我们的**收流端口**（UDP）。
+    ///
+    /// @note 应用要往 `url 里的 host : server_udp_port()` 发 RTP。
+    [[nodiscard]] std::uint16_t server_udp_port() const noexcept;
+
+    /// 推流模式下：服务端告诉我们的 RTCP 端口（UDP）。
+    [[nodiscard]] std::uint16_t server_rtcp_port() const noexcept;
 
     /// 请求停止（发 TEARDOWN 并断开）。
     void teardown();
