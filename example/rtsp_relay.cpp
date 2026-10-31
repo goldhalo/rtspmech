@@ -21,6 +21,7 @@
 
 #include <netmech/net.hpp>
 #include <netmech/udp.hpp>
+#include <netmech/worker_pool.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -44,6 +45,26 @@ using namespace std::chrono_literals;
 /// 一个 RTP 包（转发用）。
 struct RtpPacket {
     std::vector<std::uint8_t> data;   ///< 完整 RTP 包（含头）
+};
+
+/// 跨线程用的请求副本。
+///
+/// `RtspRequest` 里的字段都是借用视图，回调返回即失效，投递到线程池前
+/// 必须拷成自己的数据。
+struct OwnedRequest {
+    std::string method;
+    std::string uri;
+    std::uint32_t cseq = 0;
+    std::string transport;
+    std::string body;
+
+    explicit OwnedRequest(const RtspRequest& r)
+        : method(r.method.data(), r.method.size())
+        , uri(r.uri.data(), r.uri.size())
+        , cseq(r.cseq())
+        , transport(r.header("Transport").data(), r.header("Transport").size())
+        , body(reinterpret_cast<const char*>(r.body.data()), r.body.size())
+    {}
 };
 
 // =============================================================================
@@ -150,6 +171,9 @@ public:
 private:
     std::string m_id;
     std::uint16_t m_port;
+    std::shared_ptr<netmech::WorkerPool> m_pool;
+    std::map<RtspSession*, std::size_t>  m_session_index;
+    std::size_t                          m_next_session_index = 0;
     mutable std::mutex m_mtx;
     std::string m_sdp;
 
@@ -169,7 +193,8 @@ class Relay : public netmech::Linkable,
               public RtspHandler,
               public std::enable_shared_from_this<Relay> {
 public:
-    explicit Relay(std::uint16_t listen_port) : m_port(listen_port) {}
+    Relay(std::uint16_t listen_port, std::shared_ptr<netmech::WorkerPool> pool)
+        : m_port(listen_port), m_pool(std::move(pool)) {}
 
     std::shared_ptr<ConnHandler> on_accept(Conn& c) override
     {
@@ -201,13 +226,33 @@ public:
 
     void on_request(RtspSession& sess, const RtspRequest& req) override
     {
-        const std::string method(req.method.data(), req.method.size());
-        const std::string uri(req.uri.data(), req.uri.size());
+        // ★ 信令处理投递到业务线程池。
+        //
+        //   为什么这里要 post：RTSP 的 on_request 跑在 io 线程上，而
+        //   SETUP 要解析 Transport、可能要开 UDP 端口，DESCRIBE 要拷 SDP。
+        //   这些虽然不慢，但一旦以后加上认证/鉴权/数据库查询，就会直接
+        //   卡住所有连接的收发。
+        //
+        //   用 post_to(session_id) 保证同一个会话的请求按序处理
+        //   （OPTIONS → ANNOUNCE → SETUP → RECORD 不能乱序）。
+        //
+        //   媒体转发（on_interleaved）**不**走线程池：那是纯 IO，
+        //   在 io 线程做延迟最低（20000 包/秒时线程跳转的代价很可观）。
+        const std::size_t idx = session_index(sess);
+        m_pool->post_to(idx, [this, &sess, req = OwnedRequest(req)]() mutable {
+            handle_request(sess, req);
+        });
+    }
+
+    void handle_request(RtspSession& sess, const OwnedRequest& req)
+    {
+        const std::string& method = req.method;
+        const std::string& uri    = req.uri;
         std::printf("[relay] <- %s %s\n", method.c_str(), uri.c_str());
         std::fflush(stdout);
 
         if (method == "OPTIONS") {
-            reply(sess, req, ResponseBuilder(200, "OK")
+            reply(sess, req.cseq, ResponseBuilder(200, "OK")
                                 .header("Public", "OPTIONS, ANNOUNCE, DESCRIBE, SETUP, PLAY, RECORD, TEARDOWN"));
         } else if (method == "ANNOUNCE") {
             // 推流：记下 SDP，建 source
@@ -215,34 +260,34 @@ public:
             auto src = get_or_create_source(id);
             src->set_sdp(std::string(reinterpret_cast<const char*>(req.body.data()),
                                      req.body.size()));
-            reply(sess, req, ResponseBuilder(200, "OK"));
+            reply(sess, req.cseq, ResponseBuilder(200, "OK"));
         } else if (method == "DESCRIBE") {
             const std::string id = stream_id(uri);
             auto src = get_source(id);
             if (!src) {
-                reply(sess, req, ResponseBuilder(404, "Not Found"));
+                reply(sess, req.cseq, ResponseBuilder(404, "Not Found"));
                 return;
             }
-            reply(sess, req, ResponseBuilder(200, "OK")
+            reply(sess, req.cseq, ResponseBuilder(200, "OK")
                                 .header("Content-Type", "application/sdp")
                                 .header("Content-Base",
                                         "rtsp://127.0.0.1:" + std::to_string(m_port) +
                                             "/" + id + "/")
                                 .body(src->sdp()));
         } else if (method == "SETUP") {
-            handle_setup(sess, req, uri);
+            handle_setup(sess, req.cseq, req.transport, uri);
         } else if (method == "RECORD") {
-            reply(sess, req, ResponseBuilder(200, "OK").header("Session", session_id_of(sess)));
+            reply(sess, req.cseq, ResponseBuilder(200, "OK").header("Session", session_id_of(sess)));
             mark_publisher(sess, uri, true);
         } else if (method == "PLAY") {
-            reply(sess, req, ResponseBuilder(200, "OK")
+            reply(sess, req.cseq, ResponseBuilder(200, "OK")
                                 .header("Session", session_id_of(sess))
                                 .header("Range", "npt=0.000-"));
             mark_player(sess, uri);
         } else if (method == "TEARDOWN") {
-            reply(sess, req, ResponseBuilder(200, "OK"));
+            reply(sess, req.cseq, ResponseBuilder(200, "OK"));
         } else {
-            reply(sess, req, ResponseBuilder(501, "Not Implemented"));
+            reply(sess, req.cseq, ResponseBuilder(501, "Not Implemented"));
         }
     }
 
@@ -280,6 +325,19 @@ public:
     std::uint64_t forwarded() const { return m_forwarded.load(); }
 
 private:
+    /// 给会话分配一个稳定的序号（用于 post_to 保序）。
+    std::size_t session_index(RtspSession& sess)
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        auto it = m_session_index.find(&sess);
+        if (it != m_session_index.end()) {
+            return it->second;
+        }
+        const std::size_t idx = m_next_session_index++;
+        m_session_index[&sess] = idx;
+        return idx;
+    }
+
     /// 从 URI 里取流 ID。
     ///
     ///   `/push/12`              → `12`
@@ -325,11 +383,12 @@ private:
         return (it == m_sources.end()) ? nullptr : it->second;
     }
 
-    void handle_setup(RtspSession& sess, const RtspRequest& req, const std::string& uri)
+    void handle_setup(RtspSession& sess, std::uint32_t cseq,
+                      const std::string& transport_header, const std::string& uri)
     {
         RtspTransport t;
-        if (!parse_transport(req.header("Transport"), t)) {
-            reply(sess, req, ResponseBuilder(400, "Bad Request"));
+        if (!parse_transport(transport_header, t)) {
+            reply(sess, cseq, ResponseBuilder(400, "Bad Request"));
             return;
         }
 
@@ -337,7 +396,7 @@ private:
         auto src = get_or_create_source(id);
 
         if (t.mode == TransportMode::interleaved) {
-            reply(sess, req, ResponseBuilder(200, "OK")
+            reply(sess, cseq, ResponseBuilder(200, "OK")
                                 .header("Transport",
                                         "RTP/AVP/TCP;unicast;interleaved=" +
                                             std::to_string(t.ch1) + "-" +
@@ -361,7 +420,7 @@ private:
                     ok = create_udp_ingress(actual, src);
                 }
                 if (!ok) {
-                    reply(sess, req, ResponseBuilder(500, "No UDP Port"));
+                    reply(sess, cseq, ResponseBuilder(500, "No UDP Port"));
                     return;
                 }
                 p_actual = actual;
@@ -374,7 +433,7 @@ private:
                 m_player_udp[&sess] = {ip, t.client_rtp_port};
             }
 
-            reply(sess, req, ResponseBuilder(200, "OK")
+            reply(sess, cseq, ResponseBuilder(200, "OK")
                                 .header("Transport",
                                         "RTP/AVP;unicast;client_port=" +
                                             std::to_string(t.client_rtp_port) + "-" +
@@ -542,13 +601,16 @@ private:
         return static_cast<std::uint16_t>(50000 + (m_next_udp_port++ % 10000));
     }
 
-    void reply(RtspSession& sess, const RtspRequest& req, ResponseBuilder b)
+    void reply(RtspSession& sess, std::uint32_t cseq, ResponseBuilder b)
     {
-        b.cseq(req.cseq());
+        b.cseq(cseq);
         sess.send_response(b.build());
     }
 
     std::uint16_t m_port;
+    std::shared_ptr<netmech::WorkerPool> m_pool;
+    std::map<RtspSession*, std::size_t>  m_session_index;
+    std::size_t                          m_next_session_index = 0;
     mutable std::mutex m_mtx;
     std::map<std::string, std::shared_ptr<Source>> m_sources;
     std::vector<std::shared_ptr<RtspSession>>      m_sessions;
@@ -580,8 +642,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // 业务线程池：信令处理走这里，io 线程只负责收发
+    netmech::WorkerPool::Config pcfg;
+    pcfg.threads = 4;
+    std::error_code pec;
+    auto pool = netmech::WorkerPool::create(pcfg, pec);
+    if (!pool) {
+        std::fprintf(stderr, "WorkerPool 创建失败: %s\n", pec.message().c_str());
+        return 1;
+    }
+    std::printf("[relay] 业务线程池: %zu 线程\n", pool->thread_count());
+
     auto mech  = Mechanism::create();
-    auto relay = std::make_shared<Relay>(port);
+    auto relay = std::make_shared<Relay>(port, pool);
 
     std::error_code ec;
     mech->set_linkable(relay);
