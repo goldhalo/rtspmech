@@ -133,7 +133,7 @@ if(RTSPMECH_BUILD_EXAMPLES)
         get_filename_component(name ${src} NAME_WE)
 
         # rtsp_server 依赖 rtpmech（H264Packetizer）；没有 rtpmech 就跳过它
-        if(name STREQUAL "rtsp_server")
+        if(name STREQUAL "rtsp_server" OR name STREQUAL "rtsp_pusher")
             if(NOT EXISTS "${RTSPMECH_RTPMECH_DIR}/include/rtpmech/rtp_packet.hpp")
                 message(STATUS "跳过 rtsp_server 示例（未找到 rtpmech：${RTSPMECH_RTPMECH_DIR}）")
                 continue()

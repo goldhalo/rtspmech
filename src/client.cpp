@@ -413,6 +413,11 @@ std::uint16_t RtspClient::server_rtcp_port() const noexcept
     return m_impl ? m_impl->server_rtcp_port : 0;
 }
 
+int RtspClient::channel() const noexcept
+{
+    return m_impl ? m_impl->cfg.channel : 0;
+}
+
 bool RtspClient::is_recording() const noexcept
 {
     return m_impl && m_impl->recording.load();

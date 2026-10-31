@@ -138,6 +138,9 @@ public:
     /// 推流模式下：服务端告诉我们的 RTCP 端口（UDP）。
     [[nodiscard]] std::uint16_t server_rtcp_port() const noexcept;
 
+    /// interleaved 模式下用的通道号（推流时发 RTP 用）。
+    [[nodiscard]] int channel() const noexcept;
+
     /// 请求停止（发 TEARDOWN 并断开）。
     void teardown();
 

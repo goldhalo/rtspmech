@@ -97,6 +97,12 @@ RequestBuilder& RequestBuilder::cseq(std::uint32_t seq)
 RequestBuilder& RequestBuilder::body(std::string_view data)
 {
     m_body.assign(data.data(), data.size());
+    // ★ 必须自动补 Content-Length：ANNOUNCE 带 SDP 时没有它，接收端的
+    //   framer 就无法确定 body 长度，会把 SDP 当成下一条消息的开头，
+    //   然后解析失败、断开连接。
+    if (!m_body.empty()) {
+        header("Content-Length", std::to_string(m_body.size()));
+    }
     return *this;
 }
 
