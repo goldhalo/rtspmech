@@ -220,7 +220,8 @@ public:
 ///
 /// @par 线程
 ///  与 netmech 一致：同一会话的回调串行，不需要加锁。可从任意线程调用 `send_*`。
-class RtspSession : public netmech::ConnHandler {
+class RtspSession : public netmech::ConnHandler,
+                    public std::enable_shared_from_this<RtspSession> {
 public:
     /// 为一个刚建立的连接创建 RTSP 会话。
     ///

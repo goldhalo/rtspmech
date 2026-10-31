@@ -33,7 +33,7 @@ constexpr std::size_t kReadChunk = 8 * 1024;
 //  Impl
 // =============================================================================
 
-class RtspSession::Impl {
+class RtspSession::Impl : public std::enable_shared_from_this<RtspSession::Impl> {
 public:
     Impl(std::shared_ptr<netmech::Conn> conn, std::weak_ptr<RtspHandler> handler)
         : m_conn(std::move(conn))
@@ -99,6 +99,25 @@ public:
         if (m_closed.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
+
+        // ★ 同样要保活 Impl 自己。
+        //   close() 是本类的方法；如果下面 on_close 里的清理让外层
+        //   RtspSession 析构，Impl（它的成员）也会跟着析构，而 close()
+        //   还在 Impl 的栈上跑 —— 返回时就访问已释放的内存。
+        auto self_impl = weak_from_this().lock();
+
+        // ★ 整个关闭过程中必须让外层 RtspSession 活着。
+        //
+        //   on_close 是交给应用的回调，应用可能在里面从自己的表里移除
+        //   这个 session、触发引用计数归零 —— 如果那一瞬间 session 被
+        //   析构，接下来再访问它就是野指针（实测会直接段错误）。
+        //
+        //   这里先抓一份强引用，保证 close() 返回前对象不会被销毁。
+        std::shared_ptr<RtspSession> keep_alive;
+        if (m_facade) {
+            keep_alive = m_facade->weak_from_this().lock();
+        }
+
         const bool was_open = m_open.exchange(false, std::memory_order_acq_rel);
         if (m_conn) {
             m_conn->close();
@@ -111,6 +130,7 @@ public:
                 }
             }
         }
+        // keep_alive 在这里析构（可能在 on_close 里已被应用从表里移除）
     }
 
     /// 发一个请求。CSeq 自动分配（builder 里没设的话）。
