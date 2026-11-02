@@ -59,6 +59,15 @@ option(RTSPMECH_BUILD_TESTS       "构建 rtspmech 单元测试" ON)
 option(RTSPMECH_BUILD_EXAMPLES    "构建 rtspmech 示例" ON)
 option(RTSPMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用）" OFF)
 
+# 位置无关代码。
+#
+# 本库只出静态库，但静态库常常被链进 .so。缺 -fPIC 时，编静态库、跑单测都
+# 正常，**只在最终链 .so 那一步**报：
+#     relocation R_X86_64_PC32 against symbol `...' can not be used when
+#     making a shared object; recompile with -fPIC
+# 这种"晚一步才炸"的坑，只能靠默认打开来避免。纯静态场景可 -DRTSPMECH_PIC=OFF。
+option(RTSPMECH_PIC "编译为位置无关代码（静态库要链进 .so 时必须开）" ON)
+
 add_library(rtspmech_compile_options INTERFACE)
 target_compile_options(rtspmech_compile_options INTERFACE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /W4 /permissive- /Zc:__cplusplus>
@@ -79,7 +88,10 @@ add_library(picohttpparser STATIC
     thirdparty/picohttpparser/picohttpparser.c)
 target_include_directories(picohttpparser PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picohttpparser")
-set_target_properties(picohttpparser PROPERTIES FOLDER "rtspmech/thirdparty")
+# 第三方静态库同样会被链进 .so，一样要 PIC
+set_target_properties(picohttpparser PROPERTIES
+    FOLDER "rtspmech/thirdparty"
+    POSITION_INDEPENDENT_CODE ${RTSPMECH_PIC})
 target_compile_options(picohttpparser PRIVATE
     $<$<C_COMPILER_ID:MSVC>:/wd4244 /wd4267>
     $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>
@@ -93,6 +105,8 @@ file(GLOB RTSPMECH_SOURCES CONFIGURE_DEPENDS
 
 add_library(rtspmech ${RTSPMECH_SOURCES})
 add_library(rtspmech::rtspmech ALIAS rtspmech)
+set_target_properties(rtspmech PROPERTIES
+    POSITION_INDEPENDENT_CODE ${RTSPMECH_PIC})
 
 target_include_directories(rtspmech PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
