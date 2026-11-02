@@ -97,7 +97,7 @@ add_library(rtspmech::rtspmech ALIAS rtspmech)
 target_include_directories(rtspmech PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(rtspmech
-    PUBLIC  NetMechanism
+    PUBLIC  netmech
     PRIVATE picohttpparser
     PRIVATE rtspmech_compile_options)
 
