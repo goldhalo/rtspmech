@@ -35,6 +35,12 @@ foreach(cfg IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${cfg} ${CMAKE_BINARY_DIR}/bin)
 endforeach()
 
+# 静态库统一放 build/lib —— 与 netmech / modbusmech / rtpmech / mpegmech 一致。
+# 之前本仓的 .a（含 picohttpparser）落在构建目录根上、netmech 的落在
+# build/lib/，写链接命令时得来回切目录。
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
 # ---------------------------------------------------------------------------
 # 2. 定位 netmech
 # ---------------------------------------------------------------------------
