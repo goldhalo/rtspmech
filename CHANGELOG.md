@@ -5,6 +5,27 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+**CMake 安装与导出（find_package）**
+
+- `cmake --install` 现在装出完整的一套：头文件、静态库、`lib/cmake/rtspmech/` 下的
+  `rtspmechConfig.cmake` / `rtspmechConfigVersion.cmake` / `rtspmechTargets.cmake`，
+  以及 `share/doc/rtspmech` 下的 LICENSE / NOTICE
+- 使用者只需要两行：
+  ```cmake
+  find_package(rtspmech REQUIRED)
+  target_link_libraries(app PRIVATE rtspmech::rtspmech)
+  ```
+- Config 里 `find_dependency(netmech)`；vendored 的 picohttpparser 以
+  `$<LINK_ONLY:>` 形式随 target 导出，使用者不用单独链
+
+- 默认安装前缀：Linux `/usr/local`，Windows `C:/Program Files/rtspmech`
+
+---
+
 ## [0.9.0] — 首个版本
 
 RTSP 的**协议胶水层**：TCP 字节流进来，切成消息，通过弱回调抛给应用。

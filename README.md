@@ -203,6 +203,35 @@ docs/design/        概要设计
 
 ---
 
+## 在其他项目里使用（find_package）
+
+先装 netmech，再装 rtspmech：
+
+```bash
+cmake -S ../netmech -B ../netmech/build && cmake --build ../netmech/build -j
+cmake --install ../netmech/build
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+cmake --install build                  # 默认前缀：Linux /usr/local
+```
+
+然后：
+
+```cmake
+find_package(rtspmech REQUIRED)
+target_link_libraries(app PRIVATE rtspmech::rtspmech)
+```
+
+`librtspmech.a + libpicohttpparser.a + libnetmech.a + pthread` 这几个**不用写**
+—— Config 里的 `find_dependency(netmech)` 加上导出 target 自带的
+`$<LINK_ONLY:picohttpparser>` 会把它们都带进来。
+
+注意：`rtspmech/session.hpp` 直接 `#include <netmech/conn.hpp>`（`RtspHandler`
+继承 `netmech::ConnHandler`），所以 netmech 那个包是**必需的**，不是可选的。
+
+---
+
 ## 致谢
 
 本项目的实现与文档在 **DeepSeek-V4.1** 的协助下完成 —— 架构决策与验收由作者负责，

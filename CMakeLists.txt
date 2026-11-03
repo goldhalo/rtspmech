@@ -22,6 +22,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# 安装目录规范。必须早于 target 定义：$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+# 里的变量是立即展开的，晚定义会展开成空串。
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 # ---------------------------------------------------------------------------
 # 1. 输出目录
 # ---------------------------------------------------------------------------
@@ -86,8 +91,11 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(picohttpparser STATIC
     thirdparty/picohttpparser/picohttpparser.c)
+# 只在 src/parser.cpp 里用（PRIVATE），但静态库场景下 PRIVATE 依赖仍会以
+# $<LINK_ONLY:> 形式进入导出的 interface，所以它也必须能被安装/导出。
 target_include_directories(picohttpparser PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picohttpparser")
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picohttpparser>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rtspmech/thirdparty>)
 # 第三方静态库同样会被链进 .so，一样要 PIC
 set_target_properties(picohttpparser PROPERTIES
     FOLDER "rtspmech/thirdparty"
@@ -109,7 +117,8 @@ set_target_properties(rtspmech PROPERTIES
     POSITION_INDEPENDENT_CODE ${RTSPMECH_PIC})
 
 target_include_directories(rtspmech PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(rtspmech
     PUBLIC  netmech
     PRIVATE picohttpparser
@@ -175,7 +184,62 @@ if(RTSPMECH_BUILD_EXAMPLES)
 endif()
 
 # ---------------------------------------------------------------------------
-# 8. 汇总
+# 8. 安装与导出
+# ---------------------------------------------------------------------------
+#  装完之后使用者只需要：
+#      find_package(rtspmech REQUIRED)
+#      target_link_libraries(app PRIVATE rtspmech::rtspmech)
+#  netmech、picohttpparser、Threads 都由导出的 target 带着走。
+#
+#  注意：netmech / rtspmech 的公共头都暴露了对方的类型
+#  （session.hpp 直接 #include <netmech/conn.hpp>），所以 netmech 那个包
+#  必须一起装 —— 由 Config 里的 find_dependency 自动找。
+#
+#  默认前缀：Linux -> /usr/local，Windows -> C:/Program Files/rtspmech
+# ---------------------------------------------------------------------------
+install(TARGETS rtspmech
+        EXPORT rtspmechTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# vendored 的 C 解析库与编译选项载体：都是 static/shared 目标的链接期依赖
+install(TARGETS picohttpparser rtspmech_compile_options
+        EXPORT rtspmechTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+install(DIRECTORY include/rtspmech
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp")
+
+install(DIRECTORY thirdparty/picohttpparser/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rtspmech/thirdparty
+        FILES_MATCHING PATTERN "*.h")
+
+install(EXPORT rtspmechTargets
+        FILE rtspmechTargets.cmake
+        NAMESPACE rtspmech::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rtspmech)
+
+configure_package_config_file(cmake/rtspmechConfig.cmake.in
+        "${CMAKE_CURRENT_BINARY_DIR}/rtspmechConfig.cmake"
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rtspmech)
+
+write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/rtspmechConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion)
+
+install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/rtspmechConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/rtspmechConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rtspmech)
+
+install(FILES LICENSE NOTICE
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/rtspmech)
+
+# ---------------------------------------------------------------------------
+# 9. 汇总
 # ---------------------------------------------------------------------------
 message(STATUS "----------------------------------------------------------")
 message(STATUS "  rtspmech ${PROJECT_VERSION}")
