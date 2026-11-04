@@ -182,7 +182,6 @@ private:
     std::string m_id;
     std::shared_ptr<netmech::WorkerPool> m_pool;
     std::map<RtspSession*, std::size_t>  m_session_index;
-    std::size_t                          m_next_session_index = 0;
     mutable std::mutex m_mtx;
     std::string m_sdp;
 
@@ -690,7 +689,6 @@ private:
         sess.send_response(b.build());
     }
 
-    std::uint16_t m_port;
     std::shared_ptr<netmech::WorkerPool> m_pool;
     std::map<RtspSession*, std::size_t>  m_session_index;
     std::size_t                          m_next_session_index = 0;
