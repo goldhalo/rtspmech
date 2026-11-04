@@ -10,7 +10,9 @@ namespace rtspmech {
 
 namespace {
 
-constexpr std::string_view kDefaultTransport = "RTP/AVP";
+/// 默认传输串。目前解析只走"含 TCP 与否"的分支，这个常量单独留着做对照，
+/// 标 maybe_unused 免得 clang 报 -Wunused-const-variable。
+[[maybe_unused]] constexpr std::string_view kDefaultTransport = "RTP/AVP";
 constexpr std::string_view kTcpTransport     = "RTP/AVP/TCP";
 
 std::string_view trim(std::string_view s) noexcept
