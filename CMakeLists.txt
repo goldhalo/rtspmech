@@ -80,10 +80,12 @@ option(RTSPMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用）" OFF)
 option(RTSPMECH_PIC "编译为位置无关代码（静态库要链进 .so 时必须开）" ON)
 
 add_library(rtspmech_compile_options INTERFACE)
+# 多个选项用 ';' 分隔：空格写法只有 Makefile/Ninja 才恰好正确，
+# VS 生成器会把整个字符串原样塞进 AdditionalOptions。
 target_compile_options(rtspmech_compile_options INTERFACE
-    $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /W4 /permissive- /Zc:__cplusplus>
-    $<$<C_COMPILER_ID:MSVC>:/utf-8 /W3>
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8;/W4;/permissive-;/Zc:__cplusplus>
+    $<$<C_COMPILER_ID:MSVC>:/utf-8;/W3>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra>
 )
 if(RTSPMECH_WARNINGS_AS_ERRORS)
     target_compile_options(rtspmech_compile_options INTERFACE
