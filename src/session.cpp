@@ -8,6 +8,7 @@
 //  TCP 的 FIN 只有在下一次 read 时才感知得到，所以读循环不能断——哪怕这一批
 //  数据里一条完整消息都没有，也必须立刻再发起读。
 // =============================================================================
+#include <cstring>
 #include <rtspmech/session.hpp>
 #include <rtspmech/common.hpp>
 
