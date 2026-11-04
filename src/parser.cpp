@@ -5,6 +5,10 @@
 
 #include <rtspmech/common.hpp>
 
+// 必须先包含 rename：pico 的符号在本库里带 rtspmech_ 前缀，
+// 这样与 httpmech 各自内嵌一份也不会在链接期撞车。
+#include "pico_rename.hpp"
+
 #include <picohttpparser.h>
 
 #include <cstring>

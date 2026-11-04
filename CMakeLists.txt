@@ -95,23 +95,14 @@ if(RTSPMECH_WARNINGS_AS_ERRORS)
 endif()
 
 # ---------------------------------------------------------------------------
-# 4. picohttpparser（C）
+# 4. picohttpparser（vendored，编进本库）
 # ---------------------------------------------------------------------------
-add_library(picohttpparser STATIC
-    thirdparty/picohttpparser/picohttpparser.c)
-# 只在 src/parser.cpp 里用（PRIVATE），但静态库场景下 PRIVATE 依赖仍会以
-# $<LINK_ONLY:> 形式进入导出的 interface，所以它也必须能被安装/导出。
-target_include_directories(picohttpparser PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picohttpparser>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rtspmech/thirdparty>)
-# 第三方静态库同样会被链进 .so，一样要 PIC
-set_target_properties(picohttpparser PROPERTIES
-    FOLDER "rtspmech/thirdparty"
-    POSITION_INDEPENDENT_CODE ${RTSPMECH_PIC})
-target_compile_options(picohttpparser PRIVATE
-    $<$<C_COMPILER_ID:MSVC>:/wd4244 /wd4267>
-    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>
-)
+#  它只是 parser 的实现细节，所以不再单独出 `libpicohttpparser.a`：
+#     · 发布物只有 librtspmech.a 一个库文件；
+#     · 公开头目录里不出现 picohttpparser.h；
+#     · 符号经 src/pico_rename.hpp 加了 rtspmech_ 前缀，与 httpmech 各自
+#       内嵌一份也不会在链接期撞车。
+#  源码由 src/pico_impl.cpp 以 C++ 方式编入。
 
 # ---------------------------------------------------------------------------
 # 5. 主库
@@ -129,8 +120,16 @@ target_include_directories(rtspmech PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(rtspmech
     PUBLIC  netmech
-    PRIVATE picohttpparser
     PRIVATE rtspmech_compile_options)
+
+# pico 的头只在本库内部可见（parser.cpp 用 <picohttpparser.h>）
+target_include_directories(rtspmech PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picohttpparser")
+
+# 第三方代码不参与"告警当错误"
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/pico_impl.cpp"
+    PROPERTIES COMPILE_OPTIONS
+    "$<$<CXX_COMPILER_ID:MSVC>:/w>$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>")
 
 set_target_properties(rtspmech PROPERTIES FOLDER "rtspmech")
 
@@ -197,7 +196,8 @@ endif()
 #  装完之后使用者只需要：
 #      find_package(rtspmech REQUIRED)
 #      target_link_libraries(app PRIVATE rtspmech::rtspmech)
-#  netmech、picohttpparser、Threads 都由导出的 target 带着走。
+#  netmech、Threads 都由导出的 target 带着走；picohttpparser 已编进本库，
+#  **不再作为独立的库随包安装**。
 #
 #  注意：netmech / rtspmech 的公共头都暴露了对方的类型
 #  （session.hpp 直接 #include <netmech/conn.hpp>），所以 netmech 那个包
@@ -211,8 +211,8 @@ install(TARGETS rtspmech
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# vendored 的 C 解析库与编译选项载体：都是 static/shared 目标的链接期依赖
-install(TARGETS picohttpparser rtspmech_compile_options
+# 编译选项载体是 PUBLIC 依赖，导出时会被引用到，必须一起进导出集
+install(TARGETS rtspmech_compile_options
         EXPORT rtspmechTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
@@ -220,9 +220,11 @@ install(DIRECTORY include/rtspmech
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         FILES_MATCHING PATTERN "*.hpp")
 
-install(DIRECTORY thirdparty/picohttpparser/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rtspmech/thirdparty
-        FILES_MATCHING PATTERN "*.h")
+# picohttpparser 的头**不装**：已编进 librtspmech.a，属于实现细节。
+# MIT 要求分发时保留版权声明，所以许可证随文档一起装。
+install(FILES thirdparty/picohttpparser/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/rtspmech
+        RENAME LICENSE.picohttpparser)
 
 install(EXPORT rtspmechTargets
         FILE rtspmechTargets.cmake
