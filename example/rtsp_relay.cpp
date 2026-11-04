@@ -180,7 +180,6 @@ public:
 
 private:
     std::string m_id;
-    std::uint16_t m_port;
     std::shared_ptr<netmech::WorkerPool> m_pool;
     std::map<RtspSession*, std::size_t>  m_session_index;
     std::size_t                          m_next_session_index = 0;
@@ -203,8 +202,9 @@ class Relay : public netmech::Linkable,
               public RtspHandler,
               public std::enable_shared_from_this<Relay> {
 public:
-    Relay(std::uint16_t listen_port, std::shared_ptr<netmech::WorkerPool> pool)
-        : m_port(listen_port), m_pool(std::move(pool)) {}
+    // 监听端口由 main 负责（它才需要打印），这里不存一份没人读的副本 ——
+    // 存了会被 clang 的 -Wunused-private-field 当错误（gcc 不报，本地发现不了）。
+    explicit Relay(std::shared_ptr<netmech::WorkerPool> pool) : m_pool(std::move(pool)) {}
 
     std::shared_ptr<ConnHandler> on_accept(Conn& c) override
     {
@@ -746,7 +746,7 @@ int main(int argc, char** argv)
     std::printf("[relay] 业务线程池: %zu 线程\n", pool->thread_count());
 
     auto mech  = Mechanism::create();
-    auto relay = std::make_shared<Relay>(port, pool);
+    auto relay = std::make_shared<Relay>(pool);
 
     std::error_code ec;
     mech->set_linkable(relay);
