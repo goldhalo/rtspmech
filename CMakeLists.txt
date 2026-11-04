@@ -179,13 +179,15 @@ if(RTSPMECH_BUILD_EXAMPLES)
                 "${RTSPMECH_RTPMECH_DIR}/src/error.cpp")
             set_target_properties(${name} PROPERTIES FOLDER "rtspmech/example")
             target_include_directories(${name} PRIVATE
-                "${RTSPMECH_RTPMECH_DIR}/include")
+                "${RTSPMECH_RTPMECH_DIR}/include"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src")
             target_link_libraries(${name} PRIVATE rtspmech rtspmech_compile_options)
             continue()
         endif()
 
         add_executable(${name} ${src})
         set_target_properties(${name} PROPERTIES FOLDER "rtspmech/example")
+        target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
         target_link_libraries(${name} PRIVATE rtspmech rtspmech_compile_options)
     endforeach()
 endif()

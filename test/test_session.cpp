@@ -9,6 +9,8 @@
 
 #include <netmech/net.hpp>
 
+#include "session_internal.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -41,21 +43,19 @@ bool wait_for(Pred pred, std::chrono::milliseconds timeout = 3000ms)
 class TestServer : public Linkable, public RtspHandler,
                    public std::enable_shared_from_this<TestServer> {
 public:
-    std::shared_ptr<ConnHandler> on_accept(Conn& c) override
+    std::shared_ptr<ConnHandler> on_accept(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
         std::shared_ptr<RtspHandler> self_h(self, static_cast<RtspHandler*>(this));
         std::weak_ptr<RtspHandler> wh = self_h;
-        auto s = RtspSession::create(c.shared_from_this(), wh, ec);
-        if (!ec) {
-            m_last_session = s;
-        }
-        return s;
+        auto h = rtspmech::detail::make_conn_adapter(wh.lock(), nullptr);
+        return h;
     }
 
     void on_request(RtspSession& s, const RtspRequest& req) override
     {
+        m_last_session = s.shared_from_this();   // 会话句柄（适配器持有它）
         requests.fetch_add(1);
         last_method.assign(req.method.data(), req.method.size());
 
@@ -81,22 +81,23 @@ public:
 class TestClient : public Linkable, public RtspHandler,
                    public std::enable_shared_from_this<TestClient> {
 public:
-    std::shared_ptr<ConnHandler> on_linkup(Conn& c) override
+    std::shared_ptr<ConnHandler> on_linkup(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
         std::shared_ptr<RtspHandler> self_h(self, static_cast<RtspHandler*>(this));
         std::weak_ptr<RtspHandler> wh = self_h;
-        m_session = RtspSession::create(c.shared_from_this(), wh, ec);
+        auto h = rtspmech::detail::make_conn_adapter(wh.lock(), nullptr);
         if (ec) {
             link_error = ec;
             return nullptr;
         }
-        return m_session;
+        return h;
     }
 
     void on_ready(RtspSession& s) override
     {
+        m_session = s.shared_from_this();
         // ★ 这里才发第一个请求：on_linkup 阶段连接还没被 netmech 驱动
         RequestBuilder b("OPTIONS", "rtsp://127.0.0.1/");
         s.send_request(b);

@@ -18,6 +18,8 @@
 
 #include <netmech/net.hpp>
 
+#include "session_internal.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -52,12 +54,12 @@ class FakeServer final : public Linkable,
                          public RtspHandler,
                          public std::enable_shared_from_this<FakeServer> {
 public:
-    std::shared_ptr<ConnHandler> on_accept(Conn& c) override
+    std::shared_ptr<ConnHandler> on_accept(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
-        auto s = RtspSession::create(c.shared_from_this(), self, ec);
-        if (ec) {
+        auto s = rtspmech::detail::make_conn_adapter(self, nullptr);
+        if (!s) {
             std::fprintf(stderr, "[server] create: %s\n", ec.message().c_str());
         }
         return s;
@@ -118,21 +120,22 @@ class DemoClient final : public Linkable,
 public:
     explicit DemoClient(std::string url) : m_url(std::move(url)) {}
 
-    std::shared_ptr<ConnHandler> on_linkup(Conn& c) override
+    std::shared_ptr<ConnHandler> on_linkup(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
-        m_session = RtspSession::create(c.shared_from_this(), self, ec);
-        if (ec) {
+        auto h    = rtspmech::detail::make_conn_adapter(self, nullptr);
+        if (!h) {
             std::fprintf(stderr, "[client] create: %s\n", ec.message().c_str());
             return nullptr;
         }
-        return m_session;
+        return h;
     }
 
     /// 连接就绪：在这里发第一个请求。
     void on_ready(RtspSession& sess) override
     {
+        m_session = sess.shared_from_this();   // 会话由适配器持有，这里拿一份句柄
         std::printf("[client] 连接就绪，开始 OPTIONS\n");
         RequestBuilder b("OPTIONS", m_url);
         sess.send_request(b);

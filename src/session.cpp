@@ -9,6 +9,8 @@
 //  数据里一条完整消息都没有，也必须立刻再发起读。
 // =============================================================================
 #include <cstring>
+#include <functional>
+
 #include <rtspmech/session.hpp>
 #include <rtspmech/common.hpp>
 
@@ -57,6 +59,16 @@ public:
             h->on_ready(*m_facade);
         }
         return m_open.load(std::memory_order_acquire);
+    }
+
+    /// 对端地址（公共 Endpoint，不泄露 netmech 类型）。
+    Endpoint peer() const noexcept
+    {
+        if (!m_conn) {
+            return Endpoint{};
+        }
+        const auto a = m_conn->remote_address();
+        return Endpoint{a.address_string(), a.port()};
     }
 
     /// 处理一批收到的字节。
@@ -269,70 +281,89 @@ RtspSession::~RtspSession()
     }
 }
 
-std::shared_ptr<RtspSession> RtspSession::create(std::shared_ptr<netmech::Conn> conn,
-                                                 std::weak_ptr<RtspHandler>     handler,
-                                                 std::error_code&               ec)
-{
-    ec.clear();
+namespace detail {
 
-    if (!conn) {
-        ec = make_error_code(RtspErrc::invalid_message);
+// =============================================================================
+//  ConnAdapter —— netmech 侧真正的 ConnHandler
+// =============================================================================
+//  以前 RtspSession 自己继承 netmech::ConnHandler，等于把 netmech 的 vtable
+//  焊进了公共类型的布局。现在这层关系挪到这里：
+//    · 应用完全看不到 netmech；
+//    · RtspSession 是普通类，只暴露 send_* / close / 查询。
+//  适配器由 netmech 持有（on_accept 的返回值），它再保活会话对象。
+class ConnAdapter final : public netmech::ConnHandler {
+public:
+    ConnAdapter(std::shared_ptr<RtspHandler> handler,
+                std::function<void(std::shared_ptr<netmech::Conn>)> on_conn)
+        : m_handler(std::move(handler))
+        , m_on_conn(std::move(on_conn))
+    {
+    }
+
+    bool on_open(std::shared_ptr<netmech::Conn> conn) override
+    {
+        // 会话在这里造：netmech 只把 Conn 的 shared_ptr 交给 on_open
+        // （on_accept 只给 Conn&），所以"拿连接"必须等到这一刻。
+        m_session               = std::shared_ptr<RtspSession>(new RtspSession());
+        m_session->m_impl       = std::make_shared<RtspSession::Impl>(std::move(conn), m_handler);
+        m_impl                  = m_session->m_impl;
+        m_impl->set_facade(m_session.get());
+        if (m_on_conn && m_impl->is_open()) {
+            m_on_conn(conn);   // 交给 server 记账（stop 时按这个列表关）
+        }
+        return m_impl->start();
+    }
+
+    void on_read(std::error_code ec, netmech::Buf buf, std::size_t n) override
+    {
+        if (!m_impl) {
+            return;
+        }
+        if (ec) {
+            m_impl->close();
+            return;
+        }
+        if (n > 0) {
+            m_impl->feed(static_cast<const std::uint8_t*>(buf.data), n);
+        }
+        // ★ 读循环不能断：FIN 只有在下一次 read 时才感知得到
+        if (m_impl->is_open()) {
+            m_impl->issue_read();
+        }
+    }
+
+    void on_write(std::error_code ec, netmech::ConstBuf, std::size_t) override
+    {
+        if (ec && m_impl) {
+            m_impl->close();
+        }
+    }
+
+    void on_close() override
+    {
+        if (m_impl) {
+            m_impl->close();
+        }
+    }
+
+private:
+    std::shared_ptr<RtspHandler>        m_handler;
+    std::function<void(std::shared_ptr<netmech::Conn>)> m_on_conn;
+    std::shared_ptr<RtspSession>        m_session;   ///< 保活会话对象
+    std::shared_ptr<RtspSession::Impl>  m_impl;
+};
+
+std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
+    std::shared_ptr<RtspHandler> handler,
+    std::function<void(std::shared_ptr<netmech::Conn>)> on_conn)
+{
+    if (!handler) {
         return nullptr;
     }
-    if (handler.expired()) {
-        ec = make_error_code(RtspErrc::invalid_message);
-        return nullptr;
-    }
-
-    auto session = std::shared_ptr<RtspSession>(new RtspSession());
-    session->m_impl = std::make_shared<Impl>(std::move(conn), std::move(handler));
-    session->m_impl->set_facade(session.get());
-    return session;
+    return std::make_shared<ConnAdapter>(std::move(handler), std::move(on_conn));
 }
 
-bool RtspSession::on_open(std::shared_ptr<netmech::Conn> conn)
-{
-    (void)conn;   // conn 已在 create 时持有
-    if (!m_impl) {
-        return false;
-    }
-    return m_impl->start();
-}
-
-void RtspSession::on_read(std::error_code ec, netmech::Buf buf, std::size_t n)
-{
-    (void)buf;
-    if (!m_impl) {
-        return;
-    }
-    if (ec) {
-        m_impl->close();
-        return;
-    }
-    if (n > 0) {
-        m_impl->feed(static_cast<const std::uint8_t*>(buf.data), n);
-    }
-    // ★ 读循环不能断：FIN 只有在下一次 read 时才感知得到
-    if (m_impl->is_open()) {
-        m_impl->issue_read();
-    }
-}
-
-void RtspSession::on_write(std::error_code ec, netmech::ConstBuf buf, std::size_t n)
-{
-    (void)buf;
-    (void)n;
-    if (ec && m_impl) {
-        m_impl->close();
-    }
-}
-
-void RtspSession::on_close()
-{
-    if (m_impl) {
-        m_impl->close();
-    }
-}
+} // namespace detail
 
 bool RtspSession::send_request(RequestBuilder& req)
 {
@@ -352,6 +383,11 @@ bool RtspSession::send_interleaved(int channel, const std::uint8_t* data, std::s
 bool RtspSession::is_open() const noexcept
 {
     return m_impl && m_impl->is_open();
+}
+
+Endpoint RtspSession::peer() const noexcept
+{
+    return m_impl ? m_impl->peer() : Endpoint{};
 }
 
 std::uint64_t RtspSession::id() const noexcept

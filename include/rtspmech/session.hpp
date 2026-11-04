@@ -20,11 +20,15 @@
 #include <string_view>
 #include <system_error>
 
-#include <netmech/conn.hpp>
+#include <rtspmech/endpoint.hpp>
 
 #include <rtspmech/span.hpp>
 
 namespace rtspmech {
+
+namespace detail {
+class ConnAdapter;   // netmech 侧的真实 ConnHandler，定义在 src/session.cpp
+} // namespace detail
 
 class RtspSession;
 
@@ -193,14 +197,15 @@ public:
 
 /// 一个 RTSP 连接。
 ///
-/// @par 为什么是 ConnHandler
-///  netmech 的连接处理器是**创建连接时绑定**的，之后不能换。所以 RTSP 会话
-///  不是"接管"一个已有连接，而是**本身就是**该连接的 handler：
+/// @par 怎么拿到会话
+///  用 `RtspServer` 监听，连接进来后库造好会话、在 `RtspHandler::on_ready()`
+///  里交给应用。会话对象由库持有（netmech 侧的实际 handler 是内部的适配器）。
 ///
 ///  @code
-///      class MyLinkable : public netmech::Linkable {
-///          std::shared_ptr<netmech::ConnHandler>
-///          on_accept(std::shared_ptr<netmech::Conn> c) override {
+///      // 现在不需要自己实现 netmech::Linkable —— 用 RtspServer：
+///      class MyAcceptor : public rtspmech::RtspAcceptor {
+///          std::shared_ptr<rtspmech::RtspHandler>
+///          on_accept(const rtspmech::Endpoint& peer) override {
 ///              return RtspSession::create(c, m_rtsp_handler);
 ///          }
 ///      };
@@ -220,21 +225,12 @@ public:
 ///
 /// @par 线程
 ///  与 netmech 一致：同一会话的回调串行，不需要加锁。可从任意线程调用 `send_*`。
-class RtspSession : public netmech::ConnHandler,
-                    public std::enable_shared_from_this<RtspSession> {
+class RtspSession : public std::enable_shared_from_this<RtspSession> {
 public:
-    /// 为一个刚建立的连接创建 RTSP 会话。
-    ///
-    /// @param[in] conn    由 netmech 的 `on_accept` / `on_linkup` 拿到的连接
-    /// @param[in] handler 事件处理器（库以 **weak_ptr** 持有）
-    /// @param[out] ec     失败原因
-    ///
-    /// @note 返回的对象**必须**交回给 netmech（作为 `on_accept` 的返回值），
-    ///       由 netmech 负责持有与驱动。自己拿着不返回，这个连接不会被读。
-    [[nodiscard]] static std::shared_ptr<RtspSession>
-    create(std::shared_ptr<netmech::Conn>        conn,
-           std::weak_ptr<RtspHandler>            handler,
-           std::error_code&                      ec);
+    class Impl;   ///< 内部实现（不透明，定义在 src/session.cpp）
+
+    /// 会话由库创建：`RtspServer` 接受连接后造会话，再通过
+    /// `RtspHandler::on_ready()` 交给应用。**应用不自己 create**。
 
     ~RtspSession();
     RtspSession(const RtspSession&) = delete;
@@ -263,29 +259,20 @@ public:
     // ---- 查询 ----
 
     [[nodiscard]] bool          is_open() const noexcept;
-    [[nodiscard]] std::uint64_t id() const noexcept;   ///< 底层 Conn 的 id
+    [[nodiscard]] std::uint64_t id() const noexcept;   ///< 底层连接的 id
+    [[nodiscard]] Endpoint      peer() const noexcept; ///< 对端地址
 
     // ---- 关闭 ----
 
     /// 关闭会话（关底层 Conn）。幂等。
     void close() noexcept;
 
-    // ---- netmech::ConnHandler ----
-    //
-    // 这四个由 netmech 驱动，应用不要直接调用。
-    //
-    // 实现要点：netmech 的读是**拉模式**（自己提供缓冲、完成时回调），
-    // 所以 on_open 里发起第一笔读，每次 on_read 处理完再发起下一笔。
-    // TCP 的 FIN 只有在下一次 read 时才感知得到，读循环不能断。
-
-    bool on_open(std::shared_ptr<netmech::Conn> conn) override;
-    void on_read(std::error_code ec, netmech::Buf buf, std::size_t n) override;
-    void on_write(std::error_code ec, netmech::ConstBuf buf, std::size_t n) override;
-    void on_close() override;
+    // 内部：由 detail::ConnAdapter 驱动（它才是 netmech 的 ConnHandler）。
+    // 应用不要直接调用这些。
+    friend class detail::ConnAdapter;
 
 private:
     RtspSession();
-    class Impl;
     std::shared_ptr<Impl> m_impl;
 };
 

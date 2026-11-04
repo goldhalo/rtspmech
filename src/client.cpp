@@ -12,6 +12,8 @@
 
 #include <netmech/net.hpp>
 
+#include "session_internal.hpp"
+
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -111,15 +113,16 @@ public:
 
     // ---- netmech::Linkable ----
 
-    std::shared_ptr<netmech::ConnHandler> on_linkup(netmech::Conn& c) override
+    std::shared_ptr<netmech::ConnHandler> on_linkup(netmech::Conn&) override
     {
-        std::error_code ec;
-        session = RtspSession::create(c.shared_from_this(), weak_of_this(), ec);
-        if (ec) {
-            fail("connect", ec, 0);
+        // netmech 侧的 handler 是内部适配器；会话在它的 on_open() 里创建，
+        // 随后 on_ready() 会把会话交回来（这里用 shared_from_this 存一份）。
+        auto self = weak_of_this().lock();
+        if (!self) {
+            fail("connect", make_error_code(RtspErrc::not_attached), 0);
             return nullptr;
         }
-        return session;
+        return detail::make_conn_adapter(std::move(self), nullptr);
     }
 
     void on_linkfail(const netmech::Address&, std::error_code ec) override
@@ -131,6 +134,7 @@ public:
 
     void on_ready(RtspSession& s) override
     {
+        session = s.shared_from_this();   // 适配器持有它，这里只是拿一份句柄
         // 推流模式没有 DESCRIBE，track 列表从自己的 SDP 里取（或默认一个）
         if (cfg.mode == ClientMode::push) {
             tracks = extract_controls(cfg.sdp);

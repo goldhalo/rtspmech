@@ -27,6 +27,8 @@
 
 #include <netmech/net.hpp>
 
+#include "session_internal.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -198,16 +200,15 @@ public:
     Server(std::shared_ptr<Stream> stream, bool is_h265)
         : m_stream(std::move(stream)), m_h265(is_h265) {}
 
-    std::shared_ptr<ConnHandler> on_accept(Conn& c) override
+    std::shared_ptr<ConnHandler> on_accept(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
-        auto s = RtspSession::create(c.shared_from_this(), self, ec);
-        if (ec) {
+        auto s = rtspmech::detail::make_conn_adapter(self, nullptr);
+        if (!s) {
             std::fprintf(stderr, "[server] create: %s\n", ec.message().c_str());
             return nullptr;
         }
-        m_session = s;
         std::printf("[server] 客户端连上了\n");
         return s;
     }

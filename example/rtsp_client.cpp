@@ -13,6 +13,8 @@
 
 #include <netmech/net.hpp>
 
+#include "session_internal.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -102,17 +104,17 @@ public:
 
     // ---- netmech::Linkable ----
 
-    std::shared_ptr<ConnHandler> on_linkup(Conn& c) override
+    std::shared_ptr<ConnHandler> on_linkup(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
-        m_session = RtspSession::create(c.shared_from_this(), self, ec);
-        if (ec) {
+        auto h = rtspmech::detail::make_conn_adapter(self, nullptr);
+        if (!h) {
             std::fprintf(stderr, "[client] create 失败: %s\n", ec.message().c_str());
             m_done.store(true);
             return nullptr;
         }
-        return m_session;
+        return h;
     }
 
     void on_linkfail(const Address&, std::error_code ec) override
@@ -126,6 +128,7 @@ public:
 
     void on_ready(RtspSession& s) override
     {
+        m_session = s.shared_from_this();
         std::printf("[client] 已连接 %s，开始 OPTIONS\n", m_session_url.c_str());
         RequestBuilder b("OPTIONS", m_session_url);
         s.send_request(b);

@@ -22,4 +22,6 @@
 #include <rtspmech/span.hpp>
 #include <rtspmech/common.hpp>
 #include <rtspmech/rtsp_transport.hpp>
+#include <rtspmech/endpoint.hpp>
 #include <rtspmech/session.hpp>
+#include <rtspmech/server.hpp>

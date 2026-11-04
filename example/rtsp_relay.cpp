@@ -20,6 +20,8 @@
 #include <rtspmech/rtspmech.hpp>
 
 #include <netmech/net.hpp>
+
+#include "session_internal.hpp"
 #include <netmech/udp.hpp>
 #include <netmech/worker_pool.hpp>
 
@@ -205,23 +207,18 @@ public:
     // 存了会被 clang 的 -Wunused-private-field 当错误（gcc 不报，本地发现不了）。
     explicit Relay(std::shared_ptr<netmech::WorkerPool> pool) : m_pool(std::move(pool)) {}
 
-    std::shared_ptr<ConnHandler> on_accept(Conn& c) override
+    std::shared_ptr<ConnHandler> on_accept(Conn& /*c*/) override
     {
         std::error_code ec;
         auto self = shared_from_this();
         std::shared_ptr<RtspHandler> h(self, static_cast<RtspHandler*>(this));
         std::weak_ptr<RtspHandler>   wh = h;
-        auto s = RtspSession::create(c.shared_from_this(), wh, ec);
-        if (ec) {
+        auto adapter = rtspmech::detail::make_conn_adapter(wh.lock(), nullptr);
+        if (!adapter) {
             return nullptr;
         }
-        {
-            std::lock_guard<std::mutex> lk(m_mtx);
-            m_sessions.push_back(s);
-            m_session_ip[s.get()] = c.remote_address().address_string();
-        }
-        std::printf("[relay] 客户端连上（共 %zu）\n", session_count());
-        return s;
+        // 会话对象要等适配器的 on_open() 才造出来 —— 记账放在 on_ready() 里。
+        return adapter;
     }
 
     // ---- RtspHandler ----
@@ -232,6 +229,18 @@ public:
     //
     // 但 OPTIONS/DESCRIBE 时还不知道意图，所以靠首个 ANNOUNCE（推流）或
     // SETUP（拉流）来判断。
+
+    /// 会话就绪：这时才拿得到会话对象，记账放这里。
+    void on_ready(RtspSession& sess) override
+    {
+        auto sp = sess.shared_from_this();
+        {
+            std::lock_guard<std::mutex> lk(m_mtx);
+            m_sessions.push_back(sp);
+            m_session_ip[sp.get()] = sess.peer().host();
+        }
+        std::printf("[relay] 客户端连上（共 %zu）\n", session_count());
+    }
 
     void on_request(RtspSession& sess, const RtspRequest& req) override
     {
