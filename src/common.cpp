@@ -3,6 +3,9 @@
 // =============================================================================
 #include <rtspmech/common.hpp>
 
+#include <string>
+#include <system_error>
+
 namespace rtspmech {
 
 namespace {

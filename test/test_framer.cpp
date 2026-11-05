@@ -10,6 +10,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cstddef>
+#include <cstdint>
 
 #include "test_framework.hpp"
 

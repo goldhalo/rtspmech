@@ -16,6 +16,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <functional>
+#include <system_error>
+#include <utility>
 
 #include "test_framework.hpp"
 

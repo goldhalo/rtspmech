@@ -31,6 +31,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <string_view>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
+#include <utility>
 
 using namespace rtspmech;
 using namespace netmech;

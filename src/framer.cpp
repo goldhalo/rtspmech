@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <cstddef>
+#include <cstdint>
 
 namespace rtspmech {
 namespace detail {

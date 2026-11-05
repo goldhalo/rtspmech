@@ -15,6 +15,10 @@
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <memory>
+#include <cstdint>
+#include <system_error>
+#include <utility>
 
 namespace rtspmech {
 

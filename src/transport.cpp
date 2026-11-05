@@ -5,6 +5,8 @@
 
 #include <cstring>
 #include <string_view>
+#include <cstddef>
+#include <cstdint>
 
 namespace rtspmech {
 

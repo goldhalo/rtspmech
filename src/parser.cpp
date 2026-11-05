@@ -12,6 +12,10 @@
 #include <picohttpparser.h>
 
 #include <cstring>
+#include <string_view>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
 
 namespace rtspmech {
 namespace detail {

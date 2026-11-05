@@ -15,6 +15,10 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <memory>
+#include <cstddef>
+#include <system_error>
+#include <utility>
 
 namespace rtspmech {
 

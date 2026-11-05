@@ -26,6 +26,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <string_view>
+#include <system_error>
+#include <utility>
 
 using namespace rtspmech;
 using namespace netmech;
