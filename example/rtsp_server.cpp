@@ -25,9 +25,6 @@
 #include <rtpmech/h264.hpp>
 #include <rtpmech/span.hpp>
 
-#include <netmech/net.hpp>
-
-#include "session_internal.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -39,7 +36,6 @@
 #include <vector>
 
 using namespace rtspmech;
-using namespace netmech;
 
 namespace {
 
@@ -193,24 +189,19 @@ struct Stream {
 //  服务端
 // -----------------------------------------------------------------------------
 
-class Server final : public Linkable,
+class Server final : public rtspmech::RtspAcceptor,
                      public RtspHandler,
                      public std::enable_shared_from_this<Server> {
 public:
     Server(std::shared_ptr<Stream> stream, bool is_h265)
         : m_stream(std::move(stream)), m_h265(is_h265) {}
 
-    std::shared_ptr<ConnHandler> on_accept(Conn& /*c*/) override
+    /// 新连接：返回处理它的 handler（就是自己 —— 这个 demo 只服务一个客户端）。
+    /// 返回 nullptr 表示拒绝。
+    std::shared_ptr<RtspHandler> on_accept(const rtspmech::Endpoint& /*peer*/) override
     {
-        std::error_code ec;
-        auto self = shared_from_this();
-        auto s = rtspmech::detail::make_conn_adapter(self, nullptr);
-        if (!s) {
-            std::fprintf(stderr, "[server] create: %s\n", ec.message().c_str());
-            return nullptr;
-        }
         std::printf("[server] 客户端连上了\n");
-        return s;
+        return shared_from_this();
     }
 
     void on_close(RtspSession&, std::error_code ec) override
@@ -398,18 +389,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (!netmech::initialize(2)) {
-        std::fprintf(stderr, "netmech initialize failed\n");
-        return 1;
-    }
-
-    auto mech   = Mechanism::create();
     auto server = std::make_shared<Server>(stream, is_h265);
 
-    const Address addr{"0.0.0.0", port};
-    std::error_code ec;
-    mech->set_linkable(server);
-    if ((ec = mech->listen(addr, server))) {
+    // 不需要认识 netmech：RtspServer 自己建 io 运行时、自己监听、自己接连接。
+    rtspmech::RtspServerConfig cfg;
+    cfg.local   = {"0.0.0.0", port};
+    cfg.backlog = 8;
+
+    auto srv = rtspmech::RtspServer::create(cfg, server);
+    if (!srv) {
+        std::fprintf(stderr, "create server failed\n");
+        return 1;
+    }
+    if (auto ec = srv->start()) {
         std::fprintf(stderr, "listen: %s\n", ec.message().c_str());
         return 1;
     }
@@ -425,7 +417,6 @@ int main(int argc, char** argv)
     }
 
     server->request_stop();
-    mech->close_all();
-    netmech::shutdown();
+    srv->stop();
     return 0;
 }

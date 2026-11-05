@@ -175,6 +175,12 @@ public:
         (void)sess; (void)channel; (void)data; (void)len;
     }
 
+    /// 连接**没建立起来**（客户端侧才有意义）。
+    ///
+    /// 走到这里说明 `RtspConnector::connect()` 发起了、但对端拒绝/超时/网络不通，
+    /// 此时**不会有**会话对象，所以只给错误码。
+    virtual void on_link_failed(std::error_code ec) { (void)ec; }
+
     /// 连接关闭。恰好一次。
     ///
     /// @param[in] sess 关闭的那个会话。

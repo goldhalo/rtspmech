@@ -9,6 +9,7 @@
 //  数据里一条完整消息都没有，也必须立刻再发起读。
 // =============================================================================
 #include <cstring>
+#include <cstdio>
 #include <functional>
 
 #include <rtspmech/session.hpp>
@@ -305,13 +306,18 @@ public:
         // 会话在这里造：netmech 只把 Conn 的 shared_ptr 交给 on_open
         // （on_accept 只给 Conn&），所以"拿连接"必须等到这一刻。
         m_session               = std::shared_ptr<RtspSession>(new RtspSession());
-        m_session->m_impl       = std::make_shared<RtspSession::Impl>(std::move(conn), m_handler);
+        // ★ 先留一份再 move：下面记账要用同一个连接对象，move 之后它就成了空指针。
+        auto conn_keep         = conn;
+        m_session->m_impl      = std::make_shared<RtspSession::Impl>(std::move(conn), m_handler);
         m_impl                  = m_session->m_impl;
         m_impl->set_facade(m_session.get());
-        if (m_on_conn && m_impl->is_open()) {
-            m_on_conn(conn);   // 交给 server 记账（stop 时按这个列表关）
+        const bool ok = m_impl->start();
+        // 记账必须在 start() **之后**：start() 里才把会话置为 open，
+        // 之前判断 is_open() 永远是 false（Connector 的 close 就找不到连接）。
+        if (ok && m_on_conn) {
+            m_on_conn(conn_keep);   // 交给 server/connector 记账
         }
-        return m_impl->start();
+        return ok;
     }
 
     void on_read(std::error_code ec, netmech::Buf buf, std::size_t n) override

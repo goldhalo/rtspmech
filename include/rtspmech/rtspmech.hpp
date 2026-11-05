@@ -25,3 +25,4 @@
 #include <rtspmech/endpoint.hpp>
 #include <rtspmech/session.hpp>
 #include <rtspmech/server.hpp>
+#include <rtspmech/connector.hpp>
