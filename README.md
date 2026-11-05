@@ -195,7 +195,7 @@ cmake -S . -B build -DRTSPMECH_RTPMECH_DIR=/path/to/rtpmech
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `RTSPMECH_BUILD_TESTS` | ON | 单元测试（30 用例 / 153 断言） |
+| `RTSPMECH_BUILD_TESTS` | ON | 单元测试 |
 | `RTSPMECH_BUILD_EXAMPLES` | ON | `rtsp_demo` |
 | `RTSPMECH_WARNINGS_AS_ERRORS` | OFF | CI 用 |
 
@@ -204,7 +204,7 @@ cmake -S . -B build -DRTSPMECH_RTPMECH_DIR=/path/to/rtpmech
 ## 目录结构
 
 ```
-include/rtspmech/   公共头（9 个）
+include/rtspmech/   公共头
   span.hpp          轻量 span
   endpoint.hpp      端点（IP + 端口，不引 netmech）
   common.hpp        RtspErrc
@@ -216,7 +216,7 @@ include/rtspmech/   公共头（9 个）
   rtspmech.hpp      汇总头
 
 src/                实现（含内部头 framer / parser）
-test/               30 用例 / 153 断言
+test/               单元测试
 example/            rtsp_demo
 thirdparty/         picohttpparser（vendored）
 docs/design/        概要设计
