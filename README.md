@@ -26,32 +26,39 @@
 
 ```cpp
 #include <rtspmech/rtspmech.hpp>
-#include <netmech/net.hpp>
 
 using namespace rtspmech;
 
-// 1) 实现 Linkable：每个新连接包一个 RtspSession
-class MyServer : public netmech::Linkable, public RtspHandler,
-                 public std::enable_shared_from_this<MyServer> {
+// 1) 实现 RtspHandler：收到请求就回 200
+class MyHandler : public RtspHandler {
 public:
-    std::shared_ptr<netmech::ConnHandler> on_accept(netmech::Conn& c) override {
-        std::error_code ec;
-        auto self = shared_from_this();
-        return RtspSession::create(c.shared_from_this(), self, ec);
-    }
-
     void on_request(RtspSession& sess, const RtspRequest& req) override {
         auto wire = ResponseBuilder(200, "OK").cseq(req.cseq()).build();
         sess.send_response(std::move(wire));
     }
 };
 
-// 2) 交给 netmech 驱动
-auto mech = netmech::Mechanism::create();
-auto srv  = std::make_shared<MyServer>();
-mech->set_linkable(srv);
-mech->listen(netmech::Address{"0.0.0.0", 554}, srv);
+// 2) 实现 RtspAcceptor：每条新连接给一个 handler（返回 nullptr = 拒绝）
+class MyAcceptor : public RtspAcceptor {
+public:
+    std::shared_ptr<RtspHandler> on_accept(const Endpoint& /*peer*/) override {
+        return std::make_shared<MyHandler>();
+    }
+};
+
+// 3) 起服务：io 运行时由库自己建，不需要认识 netmech
+RtspServerConfig cfg;
+cfg.local = {"0.0.0.0", 554};
+
+auto srv = RtspServer::create(cfg, std::make_shared<MyAcceptor>());
+if (auto ec = srv->start()) { /* 端口占用等 */ }
+
+// 端口 0 时这样拿系统分配的端口：
+//   Endpoint bound = srv->local();
 ```
+
+想连出去当客户端：`RtspConnector::create({.remote = {"10.0.0.5", 554}}, handler)`，
+连上后 handler 会在 `on_ready(sess)` 里拿到会话。
 
 客户端侧多一个 `on_ready`（连接就绪后在那里发第一个请求）：
 
@@ -68,15 +75,24 @@ void on_ready(RtspSession& s) override {
 
 ## 三个必须知道的约束
 
-### ① `RtspSession` 是 `ConnHandler`，不是"接管器"
+### ① 会话由库创建，应用不自己造
 
-netmech 的连接处理器**创建连接时绑定**，之后不能换。所以 RTSP 会话不是"attach 一个已有连接"，
-而是在 `on_accept` / `on_linkup` 里创建、作为返回值交给 netmech。
+`RtspSession` 是个普通类（不继承任何外部接口）。它由 `RtspServer` /
+`RtspConnector` 在连接就绪时创建，再通过 `RtspHandler::on_ready(sess)` 交给应用。
+**没有 `RtspSession::create()` 这种入口** —— 你也拿不到一个"裸连接"去包。
 
 ### ② 第一个请求要在 `on_ready` 里发
 
-netmech 的时序是 `on_linkup` 返回 handler → 库调 `on_open()` → 之后才能读写。
-在 `on_linkup` 里刚 create 出来就 `send_request()` 是**发不出去的**（连接还没被驱动）。
+会话创建完、底层连接被驱动起来之后，库才回调 `on_ready`。
+在这之前 `send_request()` 是**发不出去的**（连接还没开始读写）。
+客户端的"连上就发 OPTIONS"就写在这里：
+
+```cpp
+void on_ready(RtspSession& s) override {
+    RequestBuilder b("OPTIONS", m_url);
+    s.send_request(b);
+}
+```
 
 ### ③ 回调里的字段是借用视图
 
@@ -137,8 +153,14 @@ parse_transport("RTP/AVP/TCP;unicast;interleaved=0-1", t);
 
 - C++17 编译器
 - CMake ≥ 3.16
-- **netmech**（git submodule）
-- **picohttpparser**（vendored 到 `thirdparty/`）
+- **netmech**（git submodule，**链接期依赖**；头文件不需要 —— 见下）
+
+> **公共头不依赖 netmech**：`include/rtspmech/*.hpp` 里没有 `#include <netmech/...>`，
+> 地址用 `rtspmech::Endpoint`。所以编译本库的代码不必把 netmech 的头挂进 include 路径。
+> 但 `librtspmech.a` 内部调用 netmech，**链接时仍然要 `libnetmech.a`**
+> （`find_package(rtspmech)` 会自动带出来）。
+>
+> picohttpparser 是 vendored 的，已经**编进 librtspmech.a**，不再单独出库、也不装它的头。
 
 ### Linux / WSL
 
@@ -158,11 +180,22 @@ cmake -S . -B build-aarch64 \
 cmake --build build-aarch64 -j
 ```
 
+### 示例对 rtpmech 的依赖
+
+`example/rtsp_server.cpp`（推流示例）用 rtpmech 的 H.264 打包器，默认从
+`../rtpmech` 取；不在那个位置就显式给：
+
+```bash
+cmake -S . -B build -DRTSPMECH_RTPMECH_DIR=/path/to/rtpmech
+```
+
+找不到时会**跳过**这个示例（不会让构建失败），其余目标照常编译。
+
 ### 构建选项
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `RTSPMECH_BUILD_TESTS` | ON | 单元测试（29 用例 / 139 断言） |
+| `RTSPMECH_BUILD_TESTS` | ON | 单元测试（30 用例 / 153 断言） |
 | `RTSPMECH_BUILD_EXAMPLES` | ON | `rtsp_demo` |
 | `RTSPMECH_WARNINGS_AS_ERRORS` | OFF | CI 用 |
 
@@ -171,15 +204,19 @@ cmake --build build-aarch64 -j
 ## 目录结构
 
 ```
-include/rtspmech/   公共头（5 个）
+include/rtspmech/   公共头（9 个）
   span.hpp          轻量 span
+  endpoint.hpp      端点（IP + 端口，不引 netmech）
   common.hpp        RtspErrc
   rtsp_transport.hpp Transport 解析 + is_rtcp
   session.hpp       RtspSession / RtspHandler / Builder
+  client.hpp        RtspClient（把常见流程封装成一步到位）
+  server.hpp        RtspServer / RtspAcceptor
+  connector.hpp     RtspConnector（客户端）
   rtspmech.hpp      汇总头
 
 src/                实现（含内部头 framer / parser）
-test/               29 用例 / 139 断言
+test/               30 用例 / 153 断言
 example/            rtsp_demo
 thirdparty/         picohttpparser（vendored）
 docs/design/        概要设计
@@ -223,12 +260,20 @@ find_package(rtspmech REQUIRED)
 target_link_libraries(app PRIVATE rtspmech::rtspmech)
 ```
 
-`librtspmech.a + libpicohttpparser.a + libnetmech.a + pthread` 这几个**不用写**
-—— Config 里的 `find_dependency(netmech)` 加上导出 target 自带的
-`$<LINK_ONLY:picohttpparser>` 会把它们都带进来。
+`librtspmech.a + libnetmech.a + pthread` 这几个**不用手写** —— 导入的 target 全带着。
 
-注意：`rtspmech/session.hpp` 直接 `#include <netmech/conn.hpp>`（`RtspHandler`
-继承 `netmech::ConnHandler`），所以 netmech 那个包是**必需的**，不是可选的。
+装出来的结构：
+
+```
+<prefix>/include/rtspmech/*.hpp                     # 只有本库的头
+<prefix>/lib/librtspmech.a                          # picohttpparser 已编进来
+<prefix>/lib/cmake/rtspmech/rtspmech{Config,ConfigVersion,Targets}.cmake
+<prefix>/share/doc/rtspmech/LICENSE.picohttpparser  # MIT 要求保留的声明
+```
+
+想控制 io 线程数（默认 = CPU 核数）或与同进程其它库共用一份线程池：
+`#include <netmech/common.hpp>` 后调一次 `netmech::initialize(n)`，或者用
+`RtspServer::create_with_mechanism() / RtspConnector::create_with_mechanism()`。
 
 ---
 
