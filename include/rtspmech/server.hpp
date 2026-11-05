@@ -50,8 +50,10 @@ public:
     /// @param[in] peer 对端地址
     /// @return 处理这个连接的 handler；**返回 nullptr 表示拒绝**（库会关掉连接）。
     ///
-    /// @note handler 由库以 weak_ptr 持有 —— 应用自己管生命周期，
-    ///       想让它活到会话结束就自己存好。
+    /// @note handler 由库以 **shared_ptr 强引用**持有，活到连接关闭为止 ——
+    ///       应用**不需要**自己再存一份（存了也不会有问题，只是多一个引用）。
+    ///       想在会话结束前就释放它，请调 `RtspSession::close()`：
+    ///       关闭后适配器随即释放强引用。
     /// @note 回调里不要做耗时操作：它会挡住该 io 线程上的其它连接。
     virtual std::shared_ptr<RtspHandler> on_accept(const Endpoint& peer) = 0;
 };
@@ -97,8 +99,14 @@ public:
     RtspServer(const RtspServer&)            = delete;
     RtspServer& operator=(const RtspServer&) = delete;
 
-    /// 开始监听。重复调用返回 `RtspErrc::already_started`（若存在）或
-    /// 一个通用错误码。
+    /// 开始监听。
+    ///
+    /// @return 空 = 成功；已在监听时返回 `std::errc::operation_in_progress`
+    ///         （幂等场景可以直接忽略）；其余为系统错误。
+    ///
+    /// @note 以前这里写的是"返回 `RtspErrc::already_started`"，但那个错误码
+    ///       **根本不存在** —— 照文档写 `if (ec == RtspErrc::already_started)`
+    ///       连编译都过不了。
     [[nodiscard]] std::error_code start();
 
     /// 停止监听并关闭本 server 建立的所有连接。幂等。

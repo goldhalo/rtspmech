@@ -53,9 +53,10 @@ public:
         std::error_code ec;
         auto self = shared_from_this();
         std::shared_ptr<RtspHandler> self_h(self, static_cast<RtspHandler*>(this));
-        std::weak_ptr<RtspHandler> wh = self_h;
-        auto h = rtspmech::detail::make_conn_adapter(wh.lock(), nullptr);
-        return h;
+        // 适配器要的是 shared_ptr（它强引用到连接关闭）；这里本来就有一个，
+        // 不必先转成 weak 再 lock 回来。
+        (void)ec;
+        return rtspmech::detail::make_conn_adapter(self_h, nullptr);
     }
 
     void on_request(RtspSession& s, const RtspRequest& req) override
@@ -91,13 +92,8 @@ public:
         std::error_code ec;
         auto self = shared_from_this();
         std::shared_ptr<RtspHandler> self_h(self, static_cast<RtspHandler*>(this));
-        std::weak_ptr<RtspHandler> wh = self_h;
-        auto h = rtspmech::detail::make_conn_adapter(wh.lock(), nullptr);
-        if (ec) {
-            link_error = ec;
-            return nullptr;
-        }
-        return h;
+        (void)ec;
+        return rtspmech::detail::make_conn_adapter(self_h, nullptr);
     }
 
     void on_ready(RtspSession& s) override

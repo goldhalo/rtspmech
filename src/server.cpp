@@ -74,13 +74,23 @@ struct RtspServer::Impl : public std::enable_shared_from_this<RtspServer::Impl> 
                 return nullptr;
             }
 
-            // 适配器由 netmech 持有；它在 on_open() 里造会话，并回调这里记账
-            return detail::make_conn_adapter(std::move(h), [w = m_owner](
-                                                                 std::shared_ptr<netmech::Conn> conn) {
-                if (auto srv = w.lock()) {
-                    srv->track(conn);
-                }
-            });
+            // 适配器由 netmech 持有；它在 on_open() 里造会话、在 on_close() 里通知下线。
+            //
+            // ★ 必须给 on_gone：以前只记账不销账，`conns` 只进不出 ——
+            //   长期运行的服务器里这张表会按"连接历史"增长，而
+            //   session_count() 每次都全表 linear scan。
+            return detail::make_conn_adapter(
+                std::move(h),
+                [w = m_owner](std::shared_ptr<netmech::Conn> conn) {
+                    if (auto srv = w.lock()) {
+                        srv->track(conn);
+                    }
+                },
+                [w = m_owner](netmech::Conn* conn) {
+                    if (auto srv = w.lock()) {
+                        srv->untrack(conn);
+                    }
+                });
         }
 
     private:

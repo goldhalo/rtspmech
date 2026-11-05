@@ -26,3 +26,4 @@
 #include <rtspmech/session.hpp>
 #include <rtspmech/server.hpp>
 #include <rtspmech/connector.hpp>
+#include <rtspmech/client.hpp>

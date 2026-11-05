@@ -10,7 +10,6 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdint>
 #include <string_view>
 
 namespace rtspmech {
@@ -80,8 +79,12 @@ struct RtspTransport {
 
 /// 判断一个 interleaved 载荷是 RTCP 还是 RTP。
 ///
-/// 规则：RTP 第 2 字节是 `M(1) + PT(7)`，PT 最大 127；RTCP 的 PT 是 200~204
-/// （单独占 8 位）。所以第 2 字节落在 200~204 就是 RTCP。
+/// 规则：RTP 第 2 字节是 `M(1) + PT(7)`，PT 最大 127；RTCP 的 PT 是 200~208
+/// （单独占 8 位）：200 SR / 201 RR / 202 SDES / 203 BYE / 204 APP /
+/// 205 RTPFB（NACK）/ 206 PSFB（PLI、FIR）/ 207 XR / 208 SDES。
+///
+/// @note 205~208 也必须算 RTCP：**RTSP over TCP 下对端发 NACK/PLI 是常态**，
+///       漏判会让它们被当成 RTP 送进解包器。
 ///
 /// @note 这个判断同时适用"RTP/RTCP 分两个 channel"（标准）和"复用同一个
 ///       channel"（部分设备）两种情形。

@@ -73,8 +73,24 @@ public:
     /// 服务端要求认证。
     virtual void on_unauthorized(RtspClient&, std::string_view /*www_authenticate*/) {}
 
-    /// 连接断开。
+    /// 连接断开（不带原因）。保留是为了兼容已有实现。
+    ///
+    /// @note 默认的 `on_closed(client, ec)` 会转调这里 —— 只重写这一个也能
+    ///       收到通知，只是拿不到原因。想知道"对端正常走了"还是"被重置"，
+    ///       请重写带 `ec` 的那个。
     virtual void on_closed(RtspClient&) {}
+
+    /// 连接断开（带原因）。
+    ///
+    /// @param[in] ec 空 = 正常关闭（应用主动 teardown / 对端正常 TEARDOWN）；
+    ///               非空 = 异常（对端 RST、报文非法、消息超限、保活超时…）。
+    ///
+    /// @note 默认实现转调 `on_closed(client)`。
+    virtual void on_closed(RtspClient& c, std::error_code ec)
+    {
+        (void)ec;
+        on_closed(c);
+    }
 };
 
 /// RTSP 客户端。
@@ -105,9 +121,6 @@ public:
 
         /// interleaved 模式下的通道号（默认 0-1）。
         int channel = 0;
-
-        /// 是否在 PLAY 之后自动保持（不发 TEARDOWN）。
-        bool keep_alive = true;
     };
 
     /// 创建并发起连接。
@@ -141,8 +154,45 @@ public:
     /// interleaved 模式下用的通道号（推流时发 RTP 用）。
     [[nodiscard]] int channel() const noexcept;
 
-    /// 请求停止（发 TEARDOWN 并断开）。
+    /// 请求停止（发 TEARDOWN 并断开）。幂等。
+    ///
+    /// @note **拉流与推流都适用**：不要求已经 PLAY，只要会话还活着就发。
+    ///       以前这里判断的是"是否正在播放"，于是推流（RECORD）成功后调用
+    ///       它会**静默返回**，什么都不做。
+    /// @note 不需要告别而想直接断开，用 `session()->close()`。
     void teardown();
+
+    /// 收到 401 后，用 Basic 凭据重发**当前**那个请求。
+    ///
+    /// @param[in] username 用户名
+    /// @param[in] password 密码
+    /// @return true  已重发（响应会照常回到回调）
+    /// @return false 没有可重发的请求（未连接 / 已完成 / 已失败）
+    ///
+    /// @par 为什么要这个接口
+    ///  401 是"应用决定怎么办"的场景：要不要问用户、要不要换账号，库替不了。
+    ///  但以前应用**拿到了决定权却没有执行的能力** —— 状态机推进变量全在
+    ///  Impl 里，公共接口只有裸的 `session()`，自己拼一个带 Authorization 的
+    ///  请求回去，响应会被映射回已经卡住的 step 上，越弄越乱。
+    ///  于是 401 的实际结局几乎总是"干等到对端超时"。
+    ///
+    /// @note 服务端要的是 Digest 等非 Basic 方案时，用
+    ///       `retry_with_authorization()` 自己算好头值。
+    [[nodiscard]] bool retry_with_credentials(std::string_view username,
+                                              std::string_view password);
+
+    /// 收到 401 后，用**原始的 Authorization 头值**重发当前请求。
+    ///
+    /// @param[in] header_value 完整的头值，例如 `Digest username="u", ...`
+    [[nodiscard]] bool retry_with_authorization(std::string_view header_value);
+
+    /// 放弃当前请求：转入失败终态并回调 `on_failed(stage, unauthorized, 401)`。
+    ///
+    /// @param[in] stage 阶段名（`"OPTIONS"` / `"DESCRIBE"` / …），仅用于日志
+    ///
+    /// @note 401 之后如果不想重试，**一定要调它**（或 teardown），否则客户端
+    ///       会停在中途：`is_playing()` 是 false、`on_closed` 也不会来。
+    void abort_unauthorized(std::string_view stage);
 
 private:
     RtspClient();

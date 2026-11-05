@@ -47,7 +47,8 @@ public:
     struct Impl;   ///< 内部实现（不透明）
 
     /// 创建（不连接）。io 运行时由本库内部创建。
-    /// @param[in] handler 事件处理器（库里以 **weak_ptr** 持有，应用自己管生命周期）
+    /// @param[in] handler 事件处理器（库里以 **shared_ptr 强引用**持有，
+    ///                    活到连接关闭为止 —— 不需要应用再存一份）
     static std::shared_ptr<RtspConnector> create(RtspConnectorConfig          cfg,
                                                  std::shared_ptr<RtspHandler> handler);
 

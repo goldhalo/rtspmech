@@ -29,6 +29,44 @@ namespace rtspmech {
 
 namespace {
 
+/// 标准 base64（HTTP Basic 认证用）。
+///
+/// 只此一处用途，所以不引第三方 —— 20 行比一个依赖划算。
+std::string base64_encode(std::string_view in)
+{
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const unsigned v = (static_cast<unsigned char>(in[i]) << 16)
+                         | (static_cast<unsigned char>(in[i + 1]) << 8)
+                         | static_cast<unsigned char>(in[i + 2]);
+        out.push_back(tbl[(v >> 18) & 0x3F]);
+        out.push_back(tbl[(v >> 12) & 0x3F]);
+        out.push_back(tbl[(v >> 6) & 0x3F]);
+        out.push_back(tbl[v & 0x3F]);
+    }
+    const std::size_t rest = in.size() - i;
+    if (rest == 1) {
+        const unsigned v = static_cast<unsigned char>(in[i]) << 16;
+        out.push_back(tbl[(v >> 18) & 0x3F]);
+        out.push_back(tbl[(v >> 12) & 0x3F]);
+        out.append("==");
+    } else if (rest == 2) {
+        const unsigned v = (static_cast<unsigned char>(in[i]) << 16)
+                         | (static_cast<unsigned char>(in[i + 1]) << 8);
+        out.push_back(tbl[(v >> 18) & 0x3F]);
+        out.push_back(tbl[(v >> 12) & 0x3F]);
+        out.push_back(tbl[(v >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+    return out;
+}
+
 /// 从 SDP 里抠 `a=control:` 的值。
 std::vector<std::string> extract_controls(std::string_view sdp)
 {
@@ -76,8 +114,12 @@ ParsedUrl parse_url(std::string_view s)
         for (char c : hostport.substr(colon + 1)) {
             if (c < '0' || c > '9') { return u; }
             v = v * 10 + static_cast<unsigned>(c - '0');
+            // ★ 每步就判上界：只在循环结束后判，`99999999999` 这种会在
+            //   unsigned 上回绕成一个小值，**通过校验**被当成合法端口。
+            //   （v 每步 ≤ 65535 之后最多再加一位，绝不会溢出 unsigned。）
+            if (v > 65535) { return u; }
         }
-        if (v == 0 || v > 65535) { return u; }
+        if (v == 0) { return u; }
         u.port = static_cast<std::uint16_t>(v);
     }
     u.ok = !u.host.empty();
@@ -101,6 +143,12 @@ public:
     std::shared_ptr<RtspSession>        session;
 
     std::atomic<bool>  playing{false};
+    /// 已发出 TEARDOWN、等对端响应后关闭（见 teardown() 的说明）。
+    ///
+    /// @note 必须是**原子**的：`teardown()` 由应用线程写，`on_response()`
+    ///       在 io 线程读。这个标志本身就是"跨线程交接一次意图"，
+    ///       用普通 bool 是标准的数据竞争（TSan 会直接报）。
+    std::atomic<bool>  teardown_pending{false};
     std::atomic<bool>  failed{false};
     std::string        session_id;
     std::string        sdp;
@@ -156,7 +204,13 @@ public:
     {
         last_status = resp.status;
 
-        // 401：交给应用
+        // 401：交给应用决定（重发还是放弃）。
+        //
+        // ★ 这里**不推进 step** —— 保持"当前请求"的身份，应用才能用
+        //   retry_with_credentials() 重发同一个请求。
+        //   以前是直接 return，而应用没有任何重放入口（step 是私有的），
+        //   自己拼请求回去响应会被映射到卡住的 step 上，越弄越乱；
+        //   实际结局几乎总是"停在这里直到对端超时"。
         if (resp.status == 401) {
             if (handler) {
                 handler->on_unauthorized(
@@ -167,30 +221,26 @@ public:
             return;
         }
 
+        // TEARDOWN 的响应：此刻那一帧一定已经写出去了，可以安全关闭。
+        if (teardown_pending.load(std::memory_order_acquire)) {
+            teardown_pending.store(false, std::memory_order_release);
+            s.close();
+            return;
+        }
+
         switch (step) {
         case Step::options:
             if (resp.status != 200) { fail("OPTIONS", std::error_code{}, resp.status); return; }
-            if (cfg.mode == ClientMode::push) {
-                // 推流：ANNOUNCE 带 SDP
-                step = Step::announce;
-                RequestBuilder b("ANNOUNCE", cfg.url);
-                b.header("Content-Type", "application/sdp");
-                b.body(cfg.sdp);
-                s.send_request(b);
-            } else {
-                // 拉流：DESCRIBE
-                step = Step::describe;
-                RequestBuilder b("DESCRIBE", cfg.url);
-                b.header("Accept", "application/sdp");
-                s.send_request(b);
-            }
+            // 推流先 ANNOUNCE（带 SDP），拉流先 DESCRIBE
+            step = (cfg.mode == ClientMode::push) ? Step::announce : Step::describe;
+            send_current(s, {});
             break;
 
         case Step::announce:
             if (resp.status != 200) { fail("ANNOUNCE", std::error_code{}, resp.status); return; }
-            step = Step::setup;
+            step        = Step::setup;
             track_index = 0;
-            send_setup(s);
+            send_current(s, {});
             break;
 
         case Step::describe:
@@ -201,8 +251,8 @@ public:
                 tracks.emplace_back("trackID=0");
             }
             track_index = 0;
-            step = Step::setup;
-            send_setup(s);
+            step        = Step::setup;
+            send_current(s, {});
             break;
 
         case Step::setup: {
@@ -224,21 +274,13 @@ public:
 
             ++track_index;
             if (track_index < tracks.size()) {
-                send_setup(s);
+                send_current(s, {});          // 还有 track，继续 SETUP
             } else if (cfg.mode == ClientMode::push) {
-                // 推流：RECORD
                 step = Step::record;
-                RequestBuilder b("RECORD", cfg.url);
-                b.header("Session", session_id);
-                b.header("Range", "npt=0.000-");
-                s.send_request(b);
+                send_current(s, {});          // 推流：RECORD
             } else {
-                // 拉流：PLAY
                 step = Step::play;
-                RequestBuilder b("PLAY", cfg.url);
-                b.header("Session", session_id);
-                b.header("Range", "npt=0.000-");
-                s.send_request(b);
+                send_current(s, {});          // 拉流：PLAY
             }
             break;
         }
@@ -252,9 +294,8 @@ public:
 
         case Step::play:
             if (resp.status != 200) { fail("PLAY", std::error_code{}, resp.status); return; }
-            step = Step::play;
             playing.store(true);
-            step = Step::done;
+            step = Step::done;                // 以前这里先写了一次 step = play（无意义）
             if (handler) { handler->on_playing(facade()); }
             break;
 
@@ -271,15 +312,18 @@ public:
     void on_close(RtspSession&, std::error_code ec) override
     {
         playing.store(false);
+        recording.store(false);
         if (handler) {
-            (void)ec;
-            handler->on_closed(facade());
+            // ★ 别丢 ec：中转/监控场景要靠它区分"对端正常 TEARDOWN 走了"
+            //   和"链路被重置，该告警重连"。以前这里 `(void)ec` 后调的是
+            //   无参版本，原因在这一层被彻底抹掉。
+            handler->on_closed(facade(), ec);
         }
     }
 
     // ---- 内部 ----
 
-    void send_setup(RtspSession& s)
+    void send_setup(RtspSession& s, std::string_view auth)
     {
         const std::string& track = tracks[track_index];
         std::string target;
@@ -309,7 +353,70 @@ public:
         if (!session_id.empty()) {
             b.header("Session", session_id);
         }
+        if (!auth.empty()) {
+            b.header("Authorization", auth);
+        }
         s.send_request(b);
+    }
+
+    /// 发"当前 step 对应的请求"。
+    ///
+    /// 收在一处的原因很实际：401 之后要**重发同一个请求**，而"当时发的是什么"
+    /// 原本分散在 `on_response` 的各个 case 里 —— 应用根本没有能力重放。
+    /// 现在 step 决定请求内容，`auth` 非空时附上 `Authorization`。
+    /// 平时的状态推进也走这里（传空 auth），顺带消掉了五个 case 里的重复代码。
+    void send_current(RtspSession& s, std::string_view auth)
+    {
+        switch (step) {
+        case Step::options: {
+            RequestBuilder b("OPTIONS", cfg.url);
+            if (!auth.empty()) { b.header("Authorization", auth); }
+            s.send_request(b);
+            break;
+        }
+        case Step::describe: {
+            RequestBuilder b("DESCRIBE", cfg.url);
+            b.header("Accept", "application/sdp");
+            if (!auth.empty()) { b.header("Authorization", auth); }
+            s.send_request(b);
+            break;
+        }
+        case Step::announce: {
+            RequestBuilder b("ANNOUNCE", cfg.url);
+            b.header("Content-Type", "application/sdp");
+            if (!auth.empty()) { b.header("Authorization", auth); }
+            b.body(cfg.sdp);
+            s.send_request(b);
+            break;
+        }
+        case Step::setup:
+            send_setup(s, auth);
+            break;
+        case Step::play:
+        case Step::record: {
+            RequestBuilder b(step == Step::play ? "PLAY" : "RECORD", cfg.url);
+            if (!session_id.empty()) { b.header("Session", session_id); }
+            b.header("Range", "npt=0.000-");
+            if (!auth.empty()) { b.header("Authorization", auth); }
+            s.send_request(b);
+            break;
+        }
+        case Step::done:
+            break;
+        }
+    }
+
+    /// 401 的重放入口（公共 API 转进来）。
+    bool retry_with_authorization(std::string_view header_value)
+    {
+        if (!session || header_value.empty()
+            || failed.load(std::memory_order_acquire)
+            || step == Step::done
+            || !session->is_open()) {
+            return false;
+        }
+        send_current(*session, header_value);
+        return true;
     }
 
     void fail(const char* stage, std::error_code ec, int status)
@@ -377,7 +484,9 @@ std::shared_ptr<RtspClient> RtspClient::create(const Config& cfg,
 
     impl->mech = netmech::Mechanism::create();
     if (!impl->mech) {
-        ec = make_error_code(RtspErrc::invalid_message);
+        // 以前这里报的是 `invalid_message`（报文格式错）—— 跟"运行时建不出来"
+        // 毫无关系，查日志时会被彻底带偏。资源暂时不可用才是实情。
+        ec = std::make_error_code(std::errc::resource_unavailable_try_again);
         return nullptr;
     }
 
@@ -445,7 +554,11 @@ RtspSession* RtspClient::session() noexcept
 
 void RtspClient::teardown()
 {
-    if (!m_impl || !m_impl->session || !m_impl->playing.load()) {
+    // ★ 条件是"会话还活着"，不是"正在播放"。
+    //   以前看 `playing`，而**推流模式下它永远是 false**（ANNOUNCE→SETUP→RECORD
+    //   走完只置 recording）—— 于是推流客户端调 teardown() 什么都没发生，
+    //   而且没有任何错误提示，属于最难查的那种"静默失效"。
+    if (!m_impl || !m_impl->session || !m_impl->session->is_open()) {
         return;
     }
     RequestBuilder b("TEARDOWN", m_impl->cfg.url);
@@ -454,7 +567,51 @@ void RtspClient::teardown()
     }
     m_impl->session->send_request(b);
     m_impl->playing.store(false);
-    m_impl->session->close();
+    m_impl->recording.store(false);
+
+    // ★ **不能**在这里 `session->close()`。
+    //
+    //   netmech 的 `Conn::close()` 会 cancel 所有挂起的写（见 conn.hpp:
+    //   "cancel 所有挂起的读/写/保活定时器"），而 RTSP 的写是异步排队的 ——
+    //   紧接着关，刚发出去的 TEARDOWN 就在队列里被一起丢掉，对端永远收不到。
+    //   （这就是这个 bug 修完条件之后仍然"发不出去"的原因。）
+    //
+    //   改成等对端的响应：收到 200/454 时说明 TEARDOWN 确实写出去了，
+    //   那时再关才安全。对端要是连响应都不给，这条连接由应用/超时处理。
+    m_impl->teardown_pending.store(true, std::memory_order_release);
+}
+
+bool RtspClient::retry_with_credentials(std::string_view username,
+                                        std::string_view password)
+{
+    if (!m_impl) {
+        return false;
+    }
+    std::string raw;
+    raw.reserve(username.size() + password.size() + 1);
+    raw.append(username);
+    raw.push_back(':');
+    raw.append(password);
+
+    std::string value = "Basic ";
+    value.append(base64_encode(raw));
+    return m_impl->retry_with_authorization(value);
+}
+
+bool RtspClient::retry_with_authorization(std::string_view header_value)
+{
+    return m_impl && m_impl->retry_with_authorization(header_value);
+}
+
+void RtspClient::abort_unauthorized(std::string_view stage)
+{
+    if (!m_impl) {
+        return;
+    }
+    // fail() 只认 const char*，这里拷一份保证生命周期
+    const std::string name(stage);
+    m_impl->fail(name.c_str(), make_error_code(RtspErrc::unauthorized),
+                 m_impl->last_status);
 }
 
 } // namespace rtspmech

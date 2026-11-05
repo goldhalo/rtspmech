@@ -86,7 +86,7 @@ const std::string kDescribe =
     "Content-Type: application/sdp\r\n"
     "Content-Length: 39\r\n"
     "\r\n"
-    "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=test\r\n";   // 正好 38 字节
+    "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=test\r\n";   // 正好 39 字节（与上面的 Content-Length 对应）
 
 /// 构造一个 $ 帧。
 std::string make_binary(int channel, const std::string& payload)

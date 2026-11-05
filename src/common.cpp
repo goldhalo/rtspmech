@@ -24,6 +24,7 @@ public:
         case RtspErrc::not_attached:       return "session not attached";
         case RtspErrc::send_failed:        return "send failed";
         case RtspErrc::invalid_transport:  return "invalid Transport header";
+        case RtspErrc::unauthorized:       return "authentication required";
         }
         return "unknown rtspmech error";
     }

@@ -17,6 +17,7 @@ enum class RtspErrc {
     not_attached,         ///< 会话已关闭
     send_failed,          ///< 底层发送失败
     invalid_transport,    ///< Transport 头无法解析
+    unauthorized,         ///< 服务端要求认证（401），且没有可用凭据
 };
 
 [[nodiscard]] const std::error_category& rtsp_category() noexcept;

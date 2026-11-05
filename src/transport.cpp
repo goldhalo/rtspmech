@@ -71,7 +71,12 @@ bool parse_port_pair(std::string_view s, std::uint16_t& a, std::uint16_t& b) noe
         if (!parse_port(s, a)) {
             return false;
         }
-        b = (a == 65535) ? 0 : static_cast<std::uint16_t>(a + 1);
+        // 65535 没有"下一个"端口：以前返回 b = 0（65535+1 回绕），
+        // 下游拿到一个语义不明的 0。成对端口本来就不成立，直接判非法。
+        if (a == 65535) {
+            return false;
+        }
+        b = static_cast<std::uint16_t>(a + 1);
         return true;
     }
     return parse_port(trim(s.substr(0, dash)), a) &&
@@ -222,9 +227,13 @@ bool is_rtcp(const std::uint8_t* data, std::size_t len) noexcept
         return false;
     }
     // RTP 第 2 字节 = M(1) + PT(7)，PT ≤ 127
-    // RTCP 第 2 字节 = PT(8)，200~204
+    // RTCP 第 2 字节 = PT(8)，200~208
+    //
+    // ★ 上界是 208，不是 204：205 = RTPFB（NACK）、206 = PSFB（PLI/FIR/SLI）、
+    //   207 = XR、208 = SDES。RTSP over TCP 场景下对端发 NACK/PLI 完全正常，
+    //   以前它们被判成 RTP 交给解包器 —— 解出来是垃圾，还会打乱 RTP 统计。
     const std::uint8_t pt = data[1];
-    return pt >= 200 && pt <= 204;
+    return pt >= 200 && pt <= 208;
 }
 
 } // namespace rtspmech

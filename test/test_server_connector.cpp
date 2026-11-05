@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <functional>
@@ -46,30 +47,53 @@ class EchoHandler final : public RtspHandler {
 public:
     void on_request(RtspSession& sess, const RtspRequest& req) override
     {
-        last_method.assign(req.method.data(), req.method.size());
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            last_method.assign(req.method.data(), req.method.size());
+        }
         requests.fetch_add(1);
 
         std::string wire = ResponseBuilder(200, "OK").cseq(req.cseq()).build();
         sess.send_response(std::move(wire));
     }
 
-    std::atomic<int> requests{0};
-    std::string      last_method;
+    /// 加锁读（io 线程写、主线程读）
+    std::string method() const
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        return last_method;
+    }
+
+    std::atomic<int>  requests{0};
+    mutable std::mutex mu;
+    std::string        last_method;
 };
 
 class EchoAcceptor final : public RtspAcceptor {
 public:
     std::shared_ptr<RtspHandler> on_accept(const Endpoint&) override
     {
-        auto h  = std::make_shared<EchoHandler>();
-        last    = h;
+        auto h = std::make_shared<EchoHandler>();
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            last = h;
+        }
         return h;
     }
+
+    /// 加锁读（io 线程写、主线程读）
+    std::shared_ptr<EchoHandler> get_last() const
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        return last;
+    }
+
+    mutable std::mutex           mu;
     std::shared_ptr<EchoHandler> last;
 };
 
 /// 客户端：连上就发 OPTIONS，记录响应状态。
-class ClientHandler final : public RtspHandler {
+class ConnectorTestHandler final : public RtspHandler {
 public:
     void on_ready(RtspSession& sess) override
     {
@@ -119,7 +143,7 @@ NETMECH_TEST(public_api_server_and_connector_roundtrip)
     REQUIRE(bound.port() != 0);
 
     // ---- 客户端：连上去 ----
-    auto ch = std::make_shared<ClientHandler>();
+    auto ch = std::make_shared<ConnectorTestHandler>();
 
     RtspConnectorConfig ccfg;
     ccfg.remote = bound;
@@ -133,9 +157,13 @@ NETMECH_TEST(public_api_server_and_connector_roundtrip)
     CHECK_EQ(ch->link_error.load(), 0);
 
     // 2) 服务端收到请求
-    REQUIRE(wait_until([&] { return acceptor->last && acceptor->last->requests.load() == 1; },
-                       3000ms));
-    CHECK(acceptor->last->last_method == "OPTIONS");
+    REQUIRE(wait_until(
+        [&] {
+            const auto h = acceptor->get_last();
+            return h && h->requests.load() == 1;
+        },
+        3000ms));
+    CHECK(acceptor->get_last()->method() == "OPTIONS");
 
     // 3) 客户端收到 200
     REQUIRE(wait_until([&] { return ch->responses.load() == 1; }, 3000ms));

@@ -73,16 +73,33 @@ RequestBuilder::RequestBuilder(std::string_view method, std::string_view uri)
 
 RequestBuilder& RequestBuilder::header(std::string_view name, std::string_view value)
 {
-    // 只接受合法头名，避免拼出畸形报文
-    if (name.empty()) {
+    // ★ 头名必须是 token（RFC 7230）：空、含 CR/LF、含冒号一律拒绝。
+    //   这是 header injection 的入口 —— 本库自己的 framer 就是被这类输入
+    //   利用过，库主动拼报文时更不该留这个口子。
+    if (name.empty() || name.find_first_of("\r\n:") != std::string_view::npos) {
         return *this;
     }
+    // ★ 值里的 CR/LF 换成空格而不是丢弃整条头：值语义还在（多行头本来也
+    //   不该出现在这里），但绝不会再拼出一行新的头。
+    std::string scratch;
+    if (value.find_first_of("\r\n") != std::string_view::npos) {
+        scratch.assign(value);
+        for (char& c : scratch) {
+            if (c == '\r' || c == '\n') {
+                c = ' ';
+            }
+        }
+        value = std::string_view(scratch);
+    }
+
     m_head.append(name);
     m_head.append(": ");
     m_head.append(value);
     m_head.append("\r\n");
     if (detail::iequals_ascii(name, "CSeq")) {
         m_has_cseq = true;
+    } else if (detail::iequals_ascii(name, "Content-Length")) {
+        m_has_content_length = true;
     }
     return *this;
 }
@@ -102,7 +119,7 @@ RequestBuilder& RequestBuilder::body(std::string_view data)
     // ★ 必须自动补 Content-Length：ANNOUNCE 带 SDP 时没有它，接收端的
     //   framer 就无法确定 body 长度，会把 SDP 当成下一条消息的开头，
     //   然后解析失败、断开连接。
-    if (!m_body.empty()) {
+    if (!m_body.empty() && !m_has_content_length) {
         header("Content-Length", std::to_string(m_body.size()));
     }
     return *this;
@@ -141,13 +158,28 @@ ResponseBuilder::ResponseBuilder(int status, std::string_view reason)
 
 ResponseBuilder& ResponseBuilder::header(std::string_view name, std::string_view value)
 {
-    if (name.empty()) {
+    // 同 RequestBuilder：头名拒绝 CR/LF/冒号，值里的 CR/LF 换成空格。
+    if (name.empty() || name.find_first_of("\r\n:") != std::string_view::npos) {
         return *this;
     }
+    std::string scratch;
+    if (value.find_first_of("\r\n") != std::string_view::npos) {
+        scratch.assign(value);
+        for (char& c : scratch) {
+            if (c == '\r' || c == '\n') {
+                c = ' ';
+            }
+        }
+        value = std::string_view(scratch);
+    }
+
     m_head.append(name);
     m_head.append(": ");
     m_head.append(value);
     m_head.append("\r\n");
+    if (detail::iequals_ascii(name, "Content-Length")) {
+        m_has_content_length = true;
+    }
     return *this;
 }
 
@@ -162,7 +194,8 @@ ResponseBuilder& ResponseBuilder::cseq(std::uint32_t seq)
 ResponseBuilder& ResponseBuilder::body(std::string_view data)
 {
     m_body.assign(data.data(), data.size());
-    if (!m_body.empty()) {
+    // 调用方自己写过 Content-Length 就不再补 —— 两个同名头是协议歧义。
+    if (!m_body.empty() && !m_has_content_length) {
         header("Content-Length", std::to_string(m_body.size()));
     }
     return *this;

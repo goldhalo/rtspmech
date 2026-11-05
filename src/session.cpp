@@ -89,8 +89,9 @@ public:
                 break;
             }
             if (st == detail::Framer::Status::too_large) {
-                // 单条消息超限：这条连接已经不可信（流可能已错位），直接关
-                close();
+                // 单条消息超限：这条连接已经不可信（流可能已错位），直接关。
+                // 带上原因 —— 应用凭它区分"对端正常走了"和"对端在灌垃圾"。
+                close(make_error_code(RtspErrc::too_large));
                 return;
             }
             if (fr.kind == detail::Framer::Frame::Kind::binary) {
@@ -113,17 +114,19 @@ public:
         return m_conn->read(netmech::Buf{nullptr, m_read_buf.data(), m_read_buf.size()});
     }
 
-    void close()
+    /// 关闭会话。
+    ///
+    /// @param[in] reason 关闭原因，原样交给 `RtspHandler::on_close`。
+    ///                   空码 = 正常关闭（应用主动关 / 对端正常 TEARDOWN）；
+    ///                   非空 = 异常（对端 RST、报文非法、消息超限…）。
+    ///
+    /// @note 只有**第一次**生效（`m_closed` 挡重复），所以异常原因不会被
+    ///       随后的"主动 close()"覆盖掉。
+    void close(std::error_code reason = {})
     {
         if (m_closed.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
-
-        // ★ 同样要保活 Impl 自己。
-        //   close() 是本类的方法；如果下面 on_close 里的清理让外层
-        //   RtspSession 析构，Impl（它的成员）也会跟着析构，而 close()
-        //   还在 Impl 的栈上跑 —— 返回时就访问已释放的内存。
-        auto self_impl = weak_from_this().lock();
 
         // ★ 整个关闭过程中必须让外层 RtspSession 活着。
         //
@@ -145,7 +148,7 @@ public:
             if (auto h = m_handler.lock()) {
                 // 用 facade（外层 RtspSession），不是 Impl 自身
                 if (m_facade) {
-                    h->on_close(*m_facade, std::error_code{});
+                    h->on_close(*m_facade, reason);
                 }
             }
         }
@@ -220,8 +223,8 @@ private:
         std::error_code ec;
         detail::ParsedMessage pm;
         if (!detail::parse_message(mutable_data, fr.len, pm, ec)) {
-            // 解析失败：这条连接上的流已经不可信，关掉
-            close();
+            // 解析失败：这条连接上的流已经不可信，关掉（原因带给应用）
+            close(ec);
             return;
         }
 
@@ -300,9 +303,11 @@ namespace detail {
 class ConnAdapter final : public netmech::ConnHandler {
 public:
     ConnAdapter(std::shared_ptr<RtspHandler> handler,
-                std::function<void(std::shared_ptr<netmech::Conn>)> on_conn)
+                std::function<void(std::shared_ptr<netmech::Conn>)> on_conn,
+                std::function<void(netmech::Conn*)>                  on_gone)
         : m_handler(std::move(handler))
         , m_on_conn(std::move(on_conn))
+        , m_on_gone(std::move(on_gone))
     {
     }
 
@@ -319,8 +324,14 @@ public:
         const bool ok = m_impl->start();
         // 记账必须在 start() **之后**：start() 里才把会话置为 open，
         // 之前判断 is_open() 永远是 false（Connector 的 close 就找不到连接）。
-        if (ok && m_on_conn) {
-            m_on_conn(conn_keep);   // 交给 server/connector 记账
+        if (ok) {
+            // 记下裸指针：on_close 时用（netmech 保证回调期间连接对象有效）。
+            // 用裸指针而不是 shared_ptr —— 否则适配器自己会把连接多保活一轮，
+            // 连接表里的 weak_ptr 永远不过期。
+            m_conn_raw = conn_keep.get();
+            if (m_on_conn) {
+                m_on_conn(conn_keep);   // 交给 server/connector 记账
+            }
         }
         return ok;
     }
@@ -331,7 +342,10 @@ public:
             return;
         }
         if (ec) {
-            m_impl->close();
+            // ★ 这里是**唯一**能拿到真实断链原因的地方（对端 RST、保活超时…）。
+            //   以前 ec 在这里被丢掉，on_close 恒收到空码 —— 应用分不清
+            //   "对端正常 TEARDOWN 走了"和"链路被重置，该告警重连"。
+            m_impl->close(ec);
             return;
         }
         if (n > 0) {
@@ -346,7 +360,7 @@ public:
     void on_write(std::error_code ec, netmech::ConstBuf, std::size_t) override
     {
         if (ec && m_impl) {
-            m_impl->close();
+            m_impl->close(ec);
         }
     }
 
@@ -355,23 +369,33 @@ public:
         if (m_impl) {
             m_impl->close();
         }
+        // ★ 反向通知：让 server 把这条连接从记账表里摘掉。
+        //   以前只有 on_conn、没有 on_gone，于是 `conns` 只增不减 ——
+        //   session_count() 是全表 scan，长期跑起来越来越慢。
+        if (m_on_gone) {
+            m_on_gone(m_conn_raw);
+        }
     }
 
 private:
     std::shared_ptr<RtspHandler>        m_handler;
     std::function<void(std::shared_ptr<netmech::Conn>)> m_on_conn;
+    std::function<void(netmech::Conn*)>                  m_on_gone;
+    netmech::Conn*                                       m_conn_raw = nullptr;
     std::shared_ptr<RtspSession>        m_session;   ///< 保活会话对象
     std::shared_ptr<RtspSession::Impl>  m_impl;
 };
 
 std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
     std::shared_ptr<RtspHandler> handler,
-    std::function<void(std::shared_ptr<netmech::Conn>)> on_conn)
+    std::function<void(std::shared_ptr<netmech::Conn>)> on_conn,
+    std::function<void(netmech::Conn*)>                  on_gone)
 {
     if (!handler) {
         return nullptr;
     }
-    return std::make_shared<ConnAdapter>(std::move(handler), std::move(on_conn));
+    return std::make_shared<ConnAdapter>(std::move(handler), std::move(on_conn),
+                                         std::move(on_gone));
 }
 
 } // namespace detail

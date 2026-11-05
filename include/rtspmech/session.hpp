@@ -112,6 +112,10 @@ private:
     std::string m_head;
     std::string m_body;
     bool        m_has_cseq = false;
+    /// 调用方自己写过 Content-Length：`body()` 不再重复补一个。
+    /// 两个同名头会让解析方各取所需（本库按第一个、第三方可能按第二个），
+    /// 那是协议歧义，比少一个头难查得多。
+    bool        m_has_content_length = false;
 };
 
 /// 构造一个响应（服务端用）。
@@ -128,6 +132,7 @@ public:
 private:
     std::string m_head;
     std::string m_body;
+    bool        m_has_content_length = false;
 };
 
 // =============================================================================
@@ -208,15 +213,16 @@ public:
 ///  里交给应用。会话对象由库持有（netmech 侧的实际 handler 是内部的适配器）。
 ///
 ///  @code
-///      // 现在不需要自己实现 netmech::Linkable —— 用 RtspServer：
+///      // 服务端：继承 RtspAcceptor，在 on_accept 里返回处理该连接的 handler。
+///      // 会话对象由库自己造（`RtspSession::create` 是私有的），应用拿不到、
+///      // 也不该自己造 —— 它会在 on_ready() 里把会话交回来。
 ///      class MyAcceptor : public rtspmech::RtspAcceptor {
 ///          std::shared_ptr<rtspmech::RtspHandler>
 ///          on_accept(const rtspmech::Endpoint& peer) override {
-///              return RtspSession::create(c, m_rtsp_handler);
+///              (void)peer;
+///              return std::make_shared<MyHandler>();
 ///          }
 ///      };
-///      mech->set_linkable(my_linkable);   // 服务端
-///      mech->connect(addr, my_linkable);  // 客户端
 ///  @endcode
 ///
 /// @par 它做什么

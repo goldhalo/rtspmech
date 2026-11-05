@@ -142,11 +142,18 @@ NETMECH_TEST(transport_is_rtcp)
     const std::uint8_t app[] = {0x80, 0xCC};
     CHECK(is_rtcp(app, sizeof(app)));
 
-    // 边界：PT=199（不是 RTCP）/ 205（不是）
+    // 边界：PT=199（不是 RTCP）/ 205 与 206（**是** RTCP 反馈报文）
     const std::uint8_t p199[] = {0x80, 0xC7};
     CHECK(!is_rtcp(p199, sizeof(p199)));
+    // 205 = RTPFB（NACK）；206 = PSFB（PLI/FIR）。RTSP over TCP 下对端发这些
+    // 是常态，以前被判成 RTP 交给解包器 —— 这条断言以前把 bug 钉死了。
     const std::uint8_t p205[] = {0x80, 0xCD};
-    CHECK(!is_rtcp(p205, sizeof(p205)));
+    CHECK(is_rtcp(p205, sizeof(p205)));
+    const std::uint8_t p206[] = {0x80, 0xCE};
+    CHECK(is_rtcp(p206, sizeof(p206)));
+    // 209 以上不是（尚未定义）
+    const std::uint8_t p209[] = {0x80, 0xD1};
+    CHECK(!is_rtcp(p209, sizeof(p209)));
 
     // 空指针
     CHECK(!is_rtcp(nullptr, 4));

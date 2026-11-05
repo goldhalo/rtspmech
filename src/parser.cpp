@@ -92,19 +92,37 @@ bool parse_message(std::uint8_t* data, std::size_t len,
     //     响应 → `RTSP/1.0 200 OK`            （在**行首**）
     //   所以要在第一行里找，不能只看开头。
     {
+        // ★ 只改写**版本 token**，不能瞎找"第一个 RTSP"。
+        //
+        //   请求行 `SETUP rtsp://host/RTSP-Cam RTSP/1.0` —— URI 里就可能带
+        //   "RTSP"。以前从行首往后找第一个出现处替换，会把 URI 改成
+        //   "HTTP-Cam"（应用回调里看到的 URI 跟着变坏），同时行尾真正的
+        //   "RTSP/1.0" 原封不动 → picohttpparser 判错 → 整条连接被当成
+        //   "不可信的流"关掉。
+        //
+        //   位置其实是确定的：请求行的版本在**行尾**，状态行的在**行首**。
         std::size_t line_end = 0;
         while (line_end + 1 < len
                && !(data[line_end] == '\r' && data[line_end + 1] == '\n')) {
             ++line_end;
         }
-        for (std::size_t i = 0; i + 4 <= line_end; ++i) {
-            if (std::memcmp(data + i, "RTSP", 4) == 0) {
-                data[i + 0] = 'H';
-                data[i + 1] = 'T';
-                data[i + 2] = 'T';
-                data[i + 3] = 'P';
-                break;
-            }
+        // 容忍行尾空白（有些设备会多打一个空格）
+        std::size_t end = line_end;
+        while (end > 0 && (data[end - 1] == ' ' || data[end - 1] == '\t')) {
+            --end;
+        }
+
+        std::size_t at = static_cast<std::size_t>(-1);
+        if (end >= 8 && std::memcmp(data + end - 8, "RTSP", 4) == 0) {
+            at = end - 8;                          // 请求行：`... RTSP/1.0`
+        } else if (len >= 6 && std::memcmp(data, "RTSP", 4) == 0) {
+            at = 0;                                // 状态行：`RTSP/1.0 200 OK`
+        }
+        if (at != static_cast<std::size_t>(-1)) {
+            data[at + 0] = 'H';
+            data[at + 1] = 'T';
+            data[at + 2] = 'T';
+            data[at + 3] = 'P';
         }
     }
 
@@ -122,9 +140,10 @@ bool parse_message(std::uint8_t* data, std::size_t len,
 
         consumed = phr_parse_response(buf, len, &minor, &status, &msg, &msg_len,
                                       raw, &num_headers, 0);
+        // picohttpparser：-1 = 语法错，-2 = 数据不全。两种都按非法报文处理
+        // （能走到这里说明 framer 已经认为一帧完整了，那就是真的错）。
         if (consumed <= 0) {
-            ec = (consumed == -2) ? make_error_code(RtspErrc::invalid_message)
-                                  : make_error_code(RtspErrc::invalid_message);
+            ec = make_error_code(RtspErrc::invalid_message);
             return false;
         }
 

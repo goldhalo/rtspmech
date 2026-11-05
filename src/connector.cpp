@@ -170,7 +170,17 @@ void RtspConnector::close() noexcept
 
 bool RtspConnector::connected() const noexcept
 {
-    return m_impl->connected.load(std::memory_order_acquire);
+    // ★ 不能只看标志：`on_linkup` 在适配器的 `on_open()` **之前**就置了 true，
+    //   而 on_open 里的会话初始化失败时，netmech 会直接关链、**不再回调
+    //   on_close**（iohandler 有明文约定）—— 于是标志永远停在 true，
+    //   `connected()` 把一个死连接报成好的。
+    //
+    //   真正的判据是连接对象本身：它只在 on_open 成功后才被记录（on_conn）。
+    if (!m_impl->connected.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    return m_impl->conn != nullptr && m_impl->conn->is_open();
 }
 
 } // namespace rtspmech
