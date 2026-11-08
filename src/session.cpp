@@ -21,6 +21,7 @@
 #include "parser.hpp"
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <memory>
@@ -158,12 +159,25 @@ public:
     /// 发一个请求。CSeq 自动分配（builder 里没设的话）。
     bool send_request(RequestBuilder& req)
     {
-        if (!m_open.load(std::memory_order_acquire)) {
+        // CSeq 的分配与写出发起要串行：否则两个线程各拿一个序号、写失败回退时
+        // 会把别人的序号踩掉。写本身是"已受理"即返回，锁窗口很小。
+        std::lock_guard<std::mutex> lk(m_send_mu);
+        if (!m_open.load(std::memory_order_acquire) || !m_conn
+            || !m_conn->is_open()) {
             return false;
         }
-        req.assign_cseq_if_absent(
-            m_next_cseq.fetch_add(1, std::memory_order_relaxed));
-        return send_wire(req.build());
+        const bool had_cseq = req.has_cseq();
+        if (!had_cseq) {
+            req.assign_cseq_if_absent(m_next_cseq);
+        }
+        if (send_wire(req.build())) {
+            if (!had_cseq) {
+                ++m_next_cseq;
+            }
+            return true;
+        }
+        // 发送失败（conn 在锁内刚好关掉）：序号回退，避免对端看到空洞。
+        return false;
     }
 
     bool send_response(std::string wire) { return send_wire(std::move(wire)); }
@@ -272,7 +286,8 @@ private:
     detail::Framer  m_framer;
     std::vector<std::uint8_t> m_read_buf;
 
-    std::atomic<std::uint32_t> m_next_cseq{1};
+    std::mutex        m_send_mu;
+    std::uint32_t     m_next_cseq = 1;   ///< 受 m_send_mu 保护
     std::atomic<bool>          m_open{false};
     std::atomic<bool>          m_closed{false};
 };

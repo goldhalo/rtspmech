@@ -162,10 +162,17 @@ void RtspServer::Impl::track(const std::shared_ptr<netmech::Conn>& c)
 void RtspServer::Impl::untrack(netmech::Conn* c)
 {
     std::lock_guard<std::mutex> lk(mu);
-    for (auto it = conns.begin(); it != conns.end(); ++it) {
-        if (it->lock().get() == c) {
-            conns.erase(it);
-            return;
+    for (auto it = conns.begin(); it != conns.end();) {
+        const auto sp = it->lock();
+        // 已过期的条目不再有任何意义，顺手清掉（以前只按指针匹配，
+        // 过期条目永远匹配不上，表会按连接历史缓慢增长）。
+        if (!sp || sp.get() == c) {
+            it = conns.erase(it);
+            if (sp && sp.get() == c) {
+                return;
+            }
+        } else {
+            ++it;
         }
     }
 }

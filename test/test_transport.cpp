@@ -158,3 +158,25 @@ NETMECH_TEST(transport_is_rtcp)
     // 空指针
     CHECK(!is_rtcp(nullptr, 4));
 }
+
+// ---------------------------------------------------------------------------
+// Transport 的参数名不区分大小写（RFC 2326 §12.39）：设备会发 Client_Port=
+// ---------------------------------------------------------------------------
+NETMECH_TEST(transport_parameter_names_are_case_insensitive)
+{
+    RtspTransport t;
+    REQUIRE(parse_transport(
+        "RTP/AVP/TCP;Unicast;CLIENT_PORT=5000-5001;Server_Port=6000-6001;"
+        "Interleaved=0-1;SSRC=11223344;DESTINATION=239.1.1.1", t));
+
+    CHECK(t.mode == TransportMode::interleaved);
+    CHECK(!t.multicast);
+    CHECK_EQ(t.client_rtp_port, std::uint16_t{5000});
+    CHECK_EQ(t.client_rtcp_port, std::uint16_t{5001});
+    CHECK_EQ(t.server_rtp_port, std::uint16_t{6000});
+    CHECK_EQ(t.server_rtcp_port, std::uint16_t{6001});
+    CHECK_EQ(t.ch1, 0);
+    CHECK_EQ(t.ch2, 1);
+    CHECK_EQ(t.ssrc, 0x11223344u);
+    CHECK(t.destination == "239.1.1.1");
+}

@@ -100,10 +100,17 @@ std::size_t Framer::parse_content_length(std::size_t head_end) const noexcept
         static constexpr char kName[] = "content-length";
         constexpr std::size_t kNameLen = sizeof(kName) - 1;
 
-        if (line_len > kNameLen + 1 && p[line + kNameLen] == ':'
+        // 冒号前允许有空白（"Content-Length : 39"）。RFC 7230 不建议，
+        // 但代理/老设备会这么发；以前直接漏读 → 长度 0 → body 被当成下一条
+        // 消息的开头，连接随即被当非法流关掉。
+        std::size_t name_end = line + kNameLen;
+        while (name_end < eol && (p[name_end] == ' ' || p[name_end] == '\t')) {
+            ++name_end;
+        }
+        if (line_len > kNameLen && name_end < eol && p[name_end] == ':'
             && iequals(p + line, kNameLen, kName, kNameLen)) {
             // 跳过 ':' 与空白，解析数字
-            std::size_t i = line + kNameLen + 1;
+            std::size_t i = name_end + 1;
             while (i < eol && (p[i] == ' ' || p[i] == '\t')) {
                 ++i;
             }

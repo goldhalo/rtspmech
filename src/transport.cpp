@@ -28,6 +28,25 @@ std::string_view trim(std::string_view s) noexcept
     return s;
 }
 
+/// 前缀比较（大小写不敏感）。Transport 的**参数名**同样不区分大小写
+/// （RFC 2326 §12.39），有些设备会发 `Client_Port=` / `Interleaved=`。
+bool starts_with_ci(std::string_view s, std::string_view prefix) noexcept
+{
+    if (s.size() < prefix.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+        const char ca = (s[i] >= 'A' && s[i] <= 'Z') ? static_cast<char>(s[i] + 32) : s[i];
+        const char cb = (prefix[i] >= 'A' && prefix[i] <= 'Z')
+                            ? static_cast<char>(prefix[i] + 32)
+                            : prefix[i];
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool iequals(std::string_view a, std::string_view b) noexcept
 {
     if (a.size() != b.size()) {
@@ -181,18 +200,18 @@ bool parse_transport(std::string_view value, RtspTransport& out) noexcept
             out.multicast = false;
         } else if (iequals(tok, "multicast")) {
             out.multicast = true;
-        } else if (tok.substr(0, 12) == "client_port=") {
+        } else if (starts_with_ci(tok, "client_port=")) {
             parse_port_pair(tok.substr(12), out.client_rtp_port, out.client_rtcp_port);
-        } else if (tok.substr(0, 12) == "server_port=") {
+        } else if (starts_with_ci(tok, "server_port=")) {
             parse_port_pair(tok.substr(12), out.server_rtp_port, out.server_rtcp_port);
-        } else if (tok.substr(0, 5) == "port=") {
+        } else if (starts_with_ci(tok, "port=")) {
             // 组播的端口
             parse_port_pair(tok.substr(5), out.mcast_rtp_port, out.mcast_rtcp_port);
-        } else if (tok.substr(0, 12) == "interleaved=") {
+        } else if (starts_with_ci(tok, "interleaved=")) {
             parse_channel_pair(tok.substr(12), out.ch1, out.ch2);
-        } else if (tok.substr(0, 5) == "ssrc=") {
+        } else if (starts_with_ci(tok, "ssrc=")) {
             parse_ssrc(tok.substr(5), out.ssrc);
-        } else if (tok.substr(0, 4) == "ttl=") {
+        } else if (starts_with_ci(tok, "ttl=")) {
             std::string_view t = trim(tok.substr(4));
             unsigned v = 0;
             bool any = false;
@@ -205,9 +224,9 @@ bool parse_transport(std::string_view value, RtspTransport& out) noexcept
             if (any) {
                 out.ttl = static_cast<std::uint8_t>(v);
             }
-        } else if (tok.substr(0, 12) == "destination=") {
+        } else if (starts_with_ci(tok, "destination=")) {
             out.destination = tok.substr(12);
-        } else if (tok.substr(0, 7) == "source=") {
+        } else if (starts_with_ci(tok, "source=")) {
             out.source = tok.substr(7);
         }
         // 其它参数（mode=PLAY、append 等）忽略

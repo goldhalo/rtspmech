@@ -280,3 +280,23 @@ NETMECH_TEST(framer_rejects_endless_header)
     Framer::Frame fr;
     CHECK(f.next(fr) == Framer::Status::too_large);
 }
+
+// ---------------------------------------------------------------------------
+// Content-Length 的头名与冒号之间允许空白（代理/老设备会这么发）：
+// 以前漏读 → 长度 0 → body 被当成下一条消息，连接随即被关。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(framer_tolerates_space_before_content_length_colon)
+{
+    const std::string msg =
+        "ANNOUNCE rtsp://x RTSP/1.0\r\nCSeq: 1\r\nContent-Length : 5\r\n\r\nhello";
+
+    Framer f;
+    const auto b = to_bytes(msg);
+    f.append(b.data(), b.size());
+
+    Framer::Frame fr;
+    REQUIRE(f.next(fr) == Framer::Status::ok);
+    CHECK(fr.kind == Framer::Frame::Kind::text);
+    CHECK_EQ(fr.len, msg.size());
+    CHECK_EQ(f.buffered(), std::size_t{0});
+}
