@@ -19,6 +19,7 @@
 
 #include "framer.hpp"
 #include "parser.hpp"
+#include "session_internal.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -61,11 +62,18 @@ public:
         if (!issue_read()) {
             return false;
         }
-        // 连接已可读写：通知应用可以发第一个请求了
+        return m_open.load(std::memory_order_acquire);
+    }
+
+    /// 连接已就绪：通知应用可以发第一个请求。
+    ///
+    /// 由 ConnAdapter 在 `on_conn` 记账**之后**调用 —— 否则应用在 `on_ready`
+    /// 里查询 `RtspServer::session_count()` 会少算自己这一条。
+    void notify_ready()
+    {
         if (auto h = m_handler.lock()) {
             h->on_ready(*m_facade);
         }
-        return m_open.load(std::memory_order_acquire);
     }
 
     /// 对端地址（公共 Endpoint，不泄露 netmech 类型）。
@@ -339,16 +347,20 @@ public:
         const bool ok = m_impl->start();
         // 记账必须在 start() **之后**：start() 里才把会话置为 open，
         // 之前判断 is_open() 永远是 false（Connector 的 close 就找不到连接）。
-        if (ok) {
-            // 记下裸指针：on_close 时用（netmech 保证回调期间连接对象有效）。
-            // 用裸指针而不是 shared_ptr —— 否则适配器自己会把连接多保活一轮，
-            // 连接表里的 weak_ptr 永远不过期。
-            m_conn_raw = conn_keep.get();
-            if (m_on_conn) {
-                m_on_conn(conn_keep);   // 交给 server/connector 记账
-            }
+        if (!ok) {
+            return false;
         }
-        return ok;
+        // 记下裸指针：on_close 时用（netmech 保证回调期间连接对象有效）。
+        // 用裸指针而不是 shared_ptr —— 否则适配器自己会把连接多保活一轮，
+        // 连接表里的 weak_ptr 永远不过期。
+        m_conn_raw = conn_keep.get();
+        if (m_on_conn) {
+            m_on_conn(conn_keep);   // 交给 server/connector 记账
+        }
+        // ★ on_ready 放在记账之后：应用在回调里查 session_count() 时能数到自己。
+        m_impl->notify_ready();
+        // on_ready 里可能已经 close()：以最终状态作为 on_open 的结果。
+        return m_impl->is_open();
     }
 
     void on_read(std::error_code ec, netmech::Buf buf, std::size_t n) override

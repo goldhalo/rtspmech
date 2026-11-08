@@ -8,6 +8,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -18,6 +20,7 @@
 
 namespace netmech {
 class Mechanism;   // 前向声明：仅 create_with_mechanism() 用到
+class Runtime;     // 前向声明：Config::runtime
 } // namespace netmech
 
 namespace rtspmech {
@@ -28,6 +31,9 @@ struct RtspConnectorConfig {
 
     /// TCP 连接超时。
     std::chrono::milliseconds connect_timeout{3000};
+
+    /// 注入 netmech 的 io 运行时（`netmech/runtime.hpp`）。空 = 默认运行时。
+    std::shared_ptr<netmech::Runtime> runtime;
 };
 
 /// 主动连出去的 RTSP 客户端端点。
@@ -42,7 +48,7 @@ struct RtspConnectorConfig {
 /// @par 线程
 /// `connect()` / `close()` / `connected()` 可在任意线程调用；
 /// 回调在该连接所属的 io 线程上串行执行。
-class RtspConnector {
+class RTSPMECH_API RtspConnector {
 public:
     struct Impl;   ///< 内部实现（不透明）
 

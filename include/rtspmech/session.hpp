@@ -16,6 +16,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -47,7 +49,7 @@ struct RtspHeader {
 ///
 /// @warning 所有 `string_view` / `span` 都是**借用视图**，指向解包用的接收缓冲。
 ///          回调返回后失效。要留就自己拷。
-struct RtspRequest {
+struct RTSPMECH_API RtspRequest {
     std::string_view      method;    ///< "OPTIONS" / "DESCRIBE" / "SETUP" / "PLAY" / ...
     std::string_view      uri;       ///< "rtsp://192.168.1.10:554/stream"
     std::string_view      version;   ///< "RTSP/1.0"
@@ -65,7 +67,7 @@ struct RtspRequest {
 };
 
 /// 收到的 RTSP 响应（客户端用）。
-struct RtspResponse {
+struct RTSPMECH_API RtspResponse {
     std::string_view      version;   ///< "RTSP/1.0"
     int                   status = 0;///< 200 / 401 / 404 / 454 / ...
     std::string_view      reason;    ///< "OK" / "Unauthorized" / ...
@@ -88,7 +90,7 @@ struct RtspResponse {
 ///
 /// 之所以不直接给 `RtspRequest`（借用视图）来发送，是因为发送时数据必须由
 /// 调用方持有到写出完成；用 builder 内部持有所有权，语义更清楚。
-class RequestBuilder {
+class RTSPMECH_API RequestBuilder {
 public:
     RequestBuilder(std::string_view method, std::string_view uri);
 
@@ -120,7 +122,7 @@ private:
 };
 
 /// 构造一个响应（服务端用）。
-class ResponseBuilder {
+class RTSPMECH_API ResponseBuilder {
 public:
     ResponseBuilder(int status, std::string_view reason);
 
@@ -141,7 +143,7 @@ private:
 // =============================================================================
 
 /// RTSP 会话上的事件。全部在该 Conn 的 io 线程上回调，**同一会话严格串行**。
-class RtspHandler {
+class RTSPMECH_API RtspHandler {
 public:
     virtual ~RtspHandler() = default;
 
@@ -238,7 +240,7 @@ public:
 ///
 /// @par 线程
 ///  与 netmech 一致：同一会话的回调串行，不需要加锁。可从任意线程调用 `send_*`。
-class RtspSession : public std::enable_shared_from_this<RtspSession> {
+class RTSPMECH_API RtspSession : public std::enable_shared_from_this<RtspSession> {
 public:
     class Impl;   ///< 内部实现（不透明，定义在 src/session.cpp）
 

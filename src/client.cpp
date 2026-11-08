@@ -13,6 +13,7 @@
 #include <netmech/net.hpp>
 
 #include "session_internal.hpp"
+#include "url.hpp"
 
 #include <atomic>
 #include <cstring>
@@ -32,6 +33,30 @@ namespace {
 /// 标准 base64（HTTP Basic 认证用）。
 ///
 /// 只此一处用途，所以不引第三方 —— 20 行比一个依赖划算。
+/// 从 SDP 里抠 `a=control:` 的值（**按行匹配**，不信全文 find）。
+std::vector<std::string> extract_controls(std::string_view sdp)
+{
+    std::vector<std::string> out;
+    constexpr std::string_view kKey = "a=control:";
+    std::size_t pos = 0;
+    while (pos < sdp.size()) {
+        const std::size_t eol = sdp.find('\n', pos);
+        const std::size_t end = (eol == std::string_view::npos) ? sdp.size() : eol;
+        std::string_view line = sdp.substr(pos, end - pos);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        if (line.size() > kKey.size() && line.substr(0, kKey.size()) == kKey) {
+            out.emplace_back(line.substr(kKey.size()));
+        }
+        if (eol == std::string_view::npos) {
+            break;
+        }
+        pos = eol + 1;
+    }
+    return out;
+}
+
 std::string base64_encode(std::string_view in)
 {
     static const char tbl[] =
@@ -67,65 +92,6 @@ std::string base64_encode(std::string_view in)
     return out;
 }
 
-/// 从 SDP 里抠 `a=control:` 的值。
-std::vector<std::string> extract_controls(std::string_view sdp)
-{
-    std::vector<std::string> out;
-    std::size_t pos = 0;
-    while ((pos = sdp.find("a=control:", pos)) != std::string_view::npos) {
-        pos += 10;
-        const auto eol = sdp.find("\r\n", pos);
-        const auto len = (eol == std::string_view::npos) ? sdp.size() - pos : eol - pos;
-        if (len > 0) {
-            out.emplace_back(sdp.substr(pos, len));
-        }
-        pos += len;
-    }
-    return out;
-}
-
-/// 拆 `rtsp://host[:port]/path`。
-struct ParsedUrl {
-    std::string   host;
-    std::uint16_t port = 554;
-    std::string   path;
-    bool          ok = false;
-};
-
-ParsedUrl parse_url(std::string_view s)
-{
-    ParsedUrl u;
-    constexpr std::string_view prefix = "rtsp://";
-    if (s.size() <= prefix.size() || s.substr(0, prefix.size()) != prefix) {
-        return u;
-    }
-    s.remove_prefix(prefix.size());
-
-    const auto slash = s.find('/');
-    std::string_view hostport = (slash == std::string_view::npos) ? s : s.substr(0, slash);
-    u.path = (slash == std::string_view::npos) ? "/" : std::string(s.substr(slash));
-
-    const auto colon = hostport.rfind(':');
-    if (colon == std::string_view::npos) {
-        u.host = std::string(hostport);
-    } else {
-        u.host = std::string(hostport.substr(0, colon));
-        unsigned v = 0;
-        for (char c : hostport.substr(colon + 1)) {
-            if (c < '0' || c > '9') { return u; }
-            v = v * 10 + static_cast<unsigned>(c - '0');
-            // ★ 每步就判上界：只在循环结束后判，`99999999999` 这种会在
-            //   unsigned 上回绕成一个小值，**通过校验**被当成合法端口。
-            //   （v 每步 ≤ 65535 之后最多再加一位，绝不会溢出 unsigned。）
-            if (v > 65535) { return u; }
-        }
-        if (v == 0) { return u; }
-        u.port = static_cast<std::uint16_t>(v);
-    }
-    u.ok = !u.host.empty();
-    return u;
-}
-
 } // namespace
 
 // =============================================================================
@@ -157,7 +123,7 @@ public:
     std::uint16_t      client_rtp_port = 0;
     std::atomic<bool>  recording{false};
 
-    ParsedUrl          url;
+    detail::ParsedUrl          url;
     std::vector<std::string> tracks;
     std::size_t        track_index = 0;
     int                last_status = 0;
@@ -469,7 +435,7 @@ std::shared_ptr<RtspClient> RtspClient::create(const Config& cfg,
 {
     ec.clear();
 
-    const ParsedUrl u = parse_url(cfg.url);
+    const detail::ParsedUrl u = detail::parse_url(cfg.url);
     if (!u.ok) {
         ec = make_error_code(RtspErrc::invalid_message);
         return nullptr;
@@ -482,7 +448,8 @@ std::shared_ptr<RtspClient> RtspClient::create(const Config& cfg,
     impl->url     = u;
     impl->owner   = client.get();
 
-    impl->mech = netmech::Mechanism::create();
+    impl->mech = netmech::Mechanism::create(netmech::Mechanism::Config{},
+                                           cfg.runtime);
     if (!impl->mech) {
         // 以前这里报的是 `invalid_message`（报文格式错）—— 跟"运行时建不出来"
         // 毫无关系，查日志时会被彻底带偏。资源暂时不可用才是实情。

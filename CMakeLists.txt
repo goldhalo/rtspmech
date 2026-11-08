@@ -59,6 +59,17 @@ if(NOT EXISTS "${RTSPMECH_NETMECH_DIR}/CMakeLists.txt")
         "   或指定：cmake -DRTSPMECH_NETMECH_DIR=<netmech 路径> ...")
 endif()
 
+# 库类型：STATIC（默认）/ SHARED。
+#
+# ★ 必须在 add_subdirectory(netmech) **之前**定义：SHARED 构建要求 netmech
+#   也以共享库形式提供 —— rtspmech 只静态链 netmech 的话，注入的 Runtime
+#   会跨两份 netmech 副本使用（netmech 文档明确禁止），测试里已实测段错误。
+set(RTSPMECH_LIBRARY_TYPE "STATIC" CACHE STRING "库类型：STATIC 或 SHARED")
+set_property(CACHE RTSPMECH_LIBRARY_TYPE PROPERTY STRINGS STATIC SHARED)
+if(RTSPMECH_LIBRARY_TYPE STREQUAL "SHARED")
+    set(NETMECH_LIBRARY_TYPE "SHARED" CACHE STRING "netmech 库类型" FORCE)
+endif()
+
 set(NETMECH_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(NETMECH_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory("${RTSPMECH_NETMECH_DIR}" "${CMAKE_BINARY_DIR}/netmech" EXCLUDE_FROM_ALL)
@@ -72,7 +83,8 @@ option(RTSPMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用）" OFF)
 
 # 位置无关代码。
 #
-# 本库只出静态库，但静态库常常被链进 .so。缺 -fPIC 时，编静态库、跑单测都
+# 默认出静态库（RTSPMECH_LIBRARY_TYPE=SHARED 可切共享库）。静态库常被链进 .so。
+# 缺 -fPIC 时，编静态库、跑单测都
 # 正常，**只在最终链 .so 那一步**报：
 #     relocation R_X86_64_PC32 against symbol `...' can not be used when
 #     making a shared object; recompile with -fPIC
@@ -110,10 +122,27 @@ endif()
 file(GLOB RTSPMECH_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-add_library(rtspmech ${RTSPMECH_SOURCES})
+add_library(rtspmech ${RTSPMECH_LIBRARY_TYPE} ${RTSPMECH_SOURCES})
 add_library(rtspmech::rtspmech ALIAS rtspmech)
 set_target_properties(rtspmech PROPERTIES
     POSITION_INDEPENDENT_CODE ${RTSPMECH_PIC})
+
+# 共享库的符号卫生（与 modbusmech/rtpmech 一致）
+if(RTSPMECH_LIBRARY_TYPE STREQUAL "SHARED")
+    target_compile_definitions(rtspmech PUBLIC RTSPMECH_SHARED)
+    target_compile_definitions(rtspmech PRIVATE RTSPMECH_BUILDING_LIBRARY)
+    set_target_properties(rtspmech PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    if(MSVC)
+        target_compile_options(rtspmech PRIVATE /wd4251)
+    elseif(UNIX AND NOT APPLE)
+        # netmech / picohttpparser 是静态链入本库的，默认可见性会全导出去。
+        target_link_options(rtspmech PRIVATE "-Wl,--exclude-libs,ALL")
+    elseif(APPLE)
+        target_link_options(rtspmech PRIVATE "-Wl,-hidden-lsymbols")
+    endif()
+endif()
 
 target_include_directories(rtspmech PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

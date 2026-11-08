@@ -293,3 +293,20 @@ NETMECH_TEST(builders_strip_crlf_from_request_line)
     ok.cseq(7);
     CHECK_EQ(ok.build(), std::string("OPTIONS rtsp://h/x RTSP/1.0\r\nCSeq: 7\r\n\r\n"));
 }
+
+// ---------------------------------------------------------------------------
+// 方法名恰好叫 "RTSP" 的请求不能被误判成响应（版本 token 是行尾的 RTSP/1.0）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(parser_method_named_rtsp_is_a_request)
+{
+    std::string text = "RTSP rtsp://h/x RTSP/1.0\r\nCSeq: 7\r\n\r\n";
+    std::vector<std::uint8_t> buf(text.begin(), text.end());
+
+    detail::ParsedMessage pm;
+    std::error_code ec;
+    REQUIRE(detail::parse_message(buf.data(), buf.size(), pm, ec));
+    CHECK(pm.kind == detail::ParsedMessage::Kind::request);
+    CHECK(pm.method == "RTSP");
+    CHECK(pm.uri == "rtsp://h/x");
+    CHECK_EQ(pm.headers[0].name, std::string_view("CSeq"));
+}

@@ -113,10 +113,12 @@ bool parse_message(std::uint8_t* data, std::size_t len,
         }
 
         std::size_t at = static_cast<std::size_t>(-1);
-        if (end >= 8 && std::memcmp(data + end - 8, "RTSP", 4) == 0) {
-            at = end - 8;                          // 请求行：`... RTSP/1.0`
-        } else if (len >= 6 && std::memcmp(data, "RTSP", 4) == 0) {
+        // 状态行必须从 "RTSP/" 开始（5 字节）；只看前 4 字节会把方法名恰好
+        // 叫 "RTSP" 的请求也当成响应、把方法名改坏。
+        if (len >= 5 && std::memcmp(data, "RTSP/", 5) == 0) {
             at = 0;                                // 状态行：`RTSP/1.0 200 OK`
+        } else if (end >= 8 && std::memcmp(data + end - 8, "RTSP/", 5) == 0) {
+            at = end - 8;                          // 请求行尾部：`... RTSP/1.0`
         }
         if (at != static_cast<std::size_t>(-1)) {
             data[at + 0] = 'H';

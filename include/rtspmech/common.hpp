@@ -1,7 +1,9 @@
 // =============================================================================
-//  rtspmech - 基础类型与错误码（讨论稿）
+//  rtspmech - 基础类型与错误码
 // =============================================================================
 #pragma once
+
+#include "rtspmech/export.hpp"
 
 #include <string>
 #include <system_error>
@@ -20,8 +22,8 @@ enum class RtspErrc {
     unauthorized,         ///< 服务端要求认证（401），且没有可用凭据
 };
 
-[[nodiscard]] const std::error_category& rtsp_category() noexcept;
-[[nodiscard]] std::error_code make_error_code(RtspErrc e) noexcept;
+[[nodiscard]] RTSPMECH_API const std::error_category& rtsp_category() noexcept;
+[[nodiscard]] RTSPMECH_API std::error_code make_error_code(RtspErrc e) noexcept;
 
 } // namespace rtspmech
 

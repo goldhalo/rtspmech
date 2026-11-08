@@ -144,7 +144,8 @@ RtspConnector::~RtspConnector()
 std::shared_ptr<RtspConnector> RtspConnector::create(RtspConnectorConfig          cfg,
                                                      std::shared_ptr<RtspHandler> handler)
 {
-    return create_with_mechanism(netmech::Mechanism::create(), std::move(cfg),
+    auto mech = netmech::Mechanism::create(netmech::Mechanism::Config{}, cfg.runtime);
+    return create_with_mechanism(std::move(mech), std::move(cfg),
                                  std::move(handler));
 }
 

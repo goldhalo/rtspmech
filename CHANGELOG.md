@@ -9,6 +9,26 @@
 
 ### 新增
 
+**动态库与 Runtime 注入（2026-11）**
+
+- `RTSPMECH_LIBRARY_TYPE=STATIC|SHARED` + `RTSPMECH_API` 导出宏；静态链入的
+  netmech / picohttpparser 符号用 `-Wl,--exclude-libs,ALL` 隐藏；CI 增加 Shared job
+- `RtspServerConfig` / `RtspConnectorConfig` / `RtspClient::Config` 增加
+  `std::shared_ptr<netmech::Runtime> runtime`：io 线程数由应用决定
+- netmech submodule 升级到支持 `Mechanism` Runtime 重载的版本
+
+### 修复（2026-11 审查）
+
+- Builder 请求行/状态行的 CRLF 注入（method/uri/reason）
+- `RtspConnector::close()` 取消语义：进行中的 connect 之后不再建会话
+- Transport 参数名大小写不敏感；`Content-Length` 容忍冒号前空白
+- `on_ready` 移到 server 记账之后（`session_count()` 能数到自己）
+- `parse_url` 支持 IPv6 字面量；`extract_controls` 按行匹配
+- server 连接表清理过期 weak；`send_request` 失败不消耗 CSeq
+
+
+### 新增
+
 **CMake 安装与导出（find_package）**
 
 - `cmake --install` 现在装出完整的一套：头文件、静态库、`lib/cmake/rtspmech/` 下的

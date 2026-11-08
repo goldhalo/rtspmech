@@ -10,6 +10,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -26,7 +28,7 @@ namespace detail {
 constexpr std::size_t kMaxHeaders = 64;
 
 /// 解析结果（借用视图，指向传入的 data）。
-struct ParsedMessage {
+struct RTSPMECH_API ParsedMessage {
     enum class Kind { request, response } kind = Kind::request;
 
     // ---- 请求行 ----
@@ -56,18 +58,18 @@ struct ParsedMessage {
 /// @return true 表示成功；false 时 ec 说明原因
 ///
 /// @note 自动判断是请求还是响应：首 token 以 "RTSP/" 开头即响应。
-[[nodiscard]] bool parse_message(std::uint8_t* data, std::size_t len,
+[[nodiscard]] RTSPMECH_API bool parse_message(std::uint8_t* data, std::size_t len,
                                  ParsedMessage& out, std::error_code& ec) noexcept;
 
 /// ASCII 大小写不敏感比较。
-[[nodiscard]] bool iequals_ascii(std::string_view a, std::string_view b) noexcept;
+[[nodiscard]] RTSPMECH_API bool iequals_ascii(std::string_view a, std::string_view b) noexcept;
 
 /// 在头部列表里按名字查找（大小写不敏感）。
-[[nodiscard]] std::string_view find_header(const RtspHeader* headers, std::size_t n,
+[[nodiscard]] RTSPMECH_API std::string_view find_header(const RtspHeader* headers, std::size_t n,
                                            std::string_view name) noexcept;
 
 /// 解析十进制无符号整数（用于 CSeq）。
-[[nodiscard]] std::uint32_t parse_u32(std::string_view s) noexcept;
+[[nodiscard]] RTSPMECH_API std::uint32_t parse_u32(std::string_view s) noexcept;
 
 } // namespace detail
 } // namespace rtspmech

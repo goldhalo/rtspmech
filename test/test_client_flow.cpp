@@ -12,6 +12,8 @@
 // ============================================================================
 #include <rtspmech/rtspmech.hpp>
 
+#include "url.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -401,4 +403,34 @@ NETMECH_TEST(client_rejects_overflowing_port)
     auto c2 = RtspClient::create(bad, std::make_shared<ClientStub>(), ec);
     CHECK(c2 == nullptr);
     CHECK(ec == RtspErrc::invalid_message);
+}
+
+// ---------------------------------------------------------------------------
+// URL 解析：IPv6 字面量 / 端口 / 非法输入
+// ---------------------------------------------------------------------------
+NETMECH_TEST(client_parse_url_supports_ipv6_literal)
+{
+    using rtspmech::detail::ParsedUrl;
+    using rtspmech::detail::parse_url;
+
+    const ParsedUrl a = parse_url("rtsp://[::1]:8554/stream");
+    CHECK(a.ok);
+    CHECK(a.host == "::1");
+    CHECK_EQ(a.port, std::uint16_t{8554});
+    CHECK(a.path == "/stream");
+
+    const ParsedUrl b = parse_url("rtsp://[2001:db8::1]/x");
+    CHECK(b.ok);
+    CHECK(b.host == "2001:db8::1");
+    CHECK_EQ(b.port, std::uint16_t{554});
+
+    const ParsedUrl c = parse_url("rtsp://127.0.0.1:554/");
+    CHECK(c.ok);
+    CHECK(c.host == "127.0.0.1");
+    CHECK_EQ(c.port, std::uint16_t{554});
+
+    // 非法：缺 ']' / 端口越界 / 非 rtsp scheme
+    CHECK(!parse_url("rtsp://[::1/stream").ok);
+    CHECK(!parse_url("rtsp://h:999999/").ok);
+    CHECK(!parse_url("http://h/").ok);
 }

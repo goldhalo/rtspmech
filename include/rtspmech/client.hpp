@@ -22,6 +22,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -30,6 +32,10 @@
 #include <vector>
 
 #include <rtspmech/session.hpp>
+
+namespace netmech {
+class Runtime;      // 前向声明：Config::runtime
+} // namespace netmech
 
 namespace rtspmech {
 
@@ -52,7 +58,7 @@ enum class TransportPreference {
 };
 
 /// 客户端事件。
-class ClientHandler {
+class RTSPMECH_API ClientHandler {
 public:
     virtual ~ClientHandler() = default;
 
@@ -94,7 +100,7 @@ public:
 };
 
 /// RTSP 客户端。
-class RtspClient : public std::enable_shared_from_this<RtspClient> {
+class RTSPMECH_API RtspClient : public std::enable_shared_from_this<RtspClient> {
 public:
     struct Config {
         /// 工作模式。
@@ -121,6 +127,10 @@ public:
 
         /// interleaved 模式下的通道号（默认 0-1）。
         int channel = 0;
+
+        /// 注入 netmech 的 io 运行时（`netmech/runtime.hpp`）。空 = 默认运行时。
+        /// @note 本头只前向声明；创建 Runtime 需包含 `<netmech/runtime.hpp>`。
+        std::shared_ptr<netmech::Runtime> runtime;
     };
 
     /// 创建并发起连接。

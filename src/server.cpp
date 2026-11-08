@@ -191,7 +191,8 @@ RtspServer::~RtspServer()
 std::shared_ptr<RtspServer> RtspServer::create(RtspServerConfig              cfg,
                                                std::shared_ptr<RtspAcceptor> acceptor)
 {
-    return create_with_mechanism(netmech::Mechanism::create(), std::move(cfg),
+    auto mech = netmech::Mechanism::create(netmech::Mechanism::Config{}, cfg.runtime);
+    return create_with_mechanism(std::move(mech), std::move(cfg),
                                  std::move(acceptor));
 }
 

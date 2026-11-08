@@ -6,6 +6,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <memory>
 #include <functional>
 
@@ -27,7 +29,7 @@ namespace detail {
 ///
 /// @note 连接对象在 `on_open()` 才拿得到（netmech 的 `on_accept` 只给 `Conn&`），
 ///       所以会话是在那一步才创建的。
-std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
+RTSPMECH_API std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
     std::shared_ptr<RtspHandler> handler,
     std::function<void(std::shared_ptr<netmech::Conn>)> on_conn,
     std::function<void(netmech::Conn*)>                  on_gone = nullptr);

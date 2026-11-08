@@ -1,5 +1,5 @@
 // =============================================================================
-//  rtspmech - Transport 头解析（讨论稿 v0.1）
+//  rtspmech - Transport 头解析
 // =============================================================================
 //  RTSP 的 Transport 头决定"RTP 走哪里"——是 UDP 独立端口，还是复用 RTSP 的
 //  TCP 连接（interleaved）。这是 SETUP / SETUP 响应里最关键的一个头。
@@ -8,6 +8,8 @@
 //  那套字段已经把各种设备发来的组合覆盖全了，不必另起一套。
 // =============================================================================
 #pragma once
+
+#include "rtspmech/export.hpp"
 
 #include <cstdint>
 #include <string_view>
@@ -75,7 +77,7 @@ struct RtspTransport {
 /// @note 同一个头里可能有**多段**（逗号分隔），表示多个候选传输方式。
 ///       调用方应先按 `,` 切开、逐段调用本函数，取第一个能接受的
 ///       （客户端通常在 SETUP 里给 2~3 段）。
-[[nodiscard]] bool parse_transport(std::string_view value, RtspTransport& out) noexcept;
+[[nodiscard]] RTSPMECH_API bool parse_transport(std::string_view value, RtspTransport& out) noexcept;
 
 /// 判断一个 interleaved 载荷是 RTCP 还是 RTP。
 ///
@@ -88,6 +90,6 @@ struct RtspTransport {
 ///
 /// @note 这个判断同时适用"RTP/RTCP 分两个 channel"（标准）和"复用同一个
 ///       channel"（部分设备）两种情形。
-[[nodiscard]] bool is_rtcp(const std::uint8_t* data, std::size_t len) noexcept;
+[[nodiscard]] RTSPMECH_API bool is_rtcp(const std::uint8_t* data, std::size_t len) noexcept;
 
 } // namespace rtspmech

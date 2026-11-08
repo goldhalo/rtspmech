@@ -287,3 +287,33 @@ target_link_libraries(app PRIVATE rtspmech::rtspmech)
 ## License
 
 MIT，见 [LICENSE](LICENSE)。
+
+## 动态库与 Runtime 注入
+
+```bash
+cmake -S . -B build-shared -DRTSPMECH_LIBRARY_TYPE=SHARED
+```
+
+- 公共 API 用 `RTSPMECH_API` 导出（Windows `dllexport/dllimport`，Linux hidden 可见性
+  + `-Wl,--exclude-libs,ALL` 隐藏静态链入的 netmech / picohttpparser 符号）；
+- SHARED 构建会把 netmech 也编成共享库（`libnetmech.so` / `netmech.dll`）：
+  两端必须在同一份 io 运行时上，否则 Runtime 注入会跨副本使用（netmech 明确禁止，
+  rtspmech 的测试里实测会段错误）。所以发布时 **rtspmech 与 netmech 两个共享库一起发**，
+  并保留 netmech 的 MIT 许可证声明。
+
+```cpp
+#include <netmech/runtime.hpp>
+
+netmech::Runtime::Options o;
+o.io_threads = 2;                       // 应用自己决定
+auto rt = netmech::Runtime::create(o);
+
+rtspmech::RtspServerConfig cfg;
+cfg.local   = {"0.0.0.0", 554};
+cfg.runtime = rt;                       // server / connector / client 都支持
+
+auto srv = rtspmech::RtspServer::create(cfg, acceptor);
+```
+
+不传 `runtime` 时行为与以前一致（进程级默认运行时）。同进程多模块请让 netmech 以
+共享库形式被共用（见 netmech `docs/packaging.md`）。

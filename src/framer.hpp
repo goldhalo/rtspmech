@@ -12,6 +12,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -19,7 +21,7 @@
 namespace rtspmech {
 namespace detail {
 
-class Framer {
+class RTSPMECH_API Framer {
 public:
     /// 切出来的一帧。
     struct Frame {

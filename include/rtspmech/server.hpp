@@ -18,6 +18,8 @@
 // =============================================================================
 #pragma once
 
+#include "rtspmech/export.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -28,6 +30,7 @@
 
 namespace netmech {
 class Mechanism;   // 前向声明：仅 create_with_mechanism() 用到
+class Runtime;     // 前向声明：Config::runtime
 } // namespace netmech
 
 namespace rtspmech {
@@ -38,10 +41,15 @@ struct RtspServerConfig {
 
     /// listen backlog。
     int backlog = 64;
+
+    /// 注入 netmech 的 io 运行时（`netmech/runtime.hpp`）。
+    /// 空 = 进程级默认运行时；非空 = 本 server 的 accept/连接都跑在该 Runtime 上。
+    /// @note 本头只前向声明；创建 Runtime 需包含 `<netmech/runtime.hpp>`。
+    std::shared_ptr<netmech::Runtime> runtime;
 };
 
 /// 新连接的"要不要接、用哪个 handler"由应用决定。
-class RtspAcceptor {
+class RTSPMECH_API RtspAcceptor {
 public:
     virtual ~RtspAcceptor() = default;
 
@@ -80,7 +88,7 @@ public:
 /// @par 线程
 /// `start()` / `stop()` / `local()` 可在任意线程调用；`on_accept` 在该连接
 /// 所属的 io 线程上串行执行。
-class RtspServer {
+class RTSPMECH_API RtspServer {
 public:
     struct Impl;   ///< 内部实现（不透明）
 

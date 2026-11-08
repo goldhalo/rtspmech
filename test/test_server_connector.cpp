@@ -11,6 +11,8 @@
 // ============================================================================
 #include <rtspmech/rtspmech.hpp>
 
+#include <netmech/runtime.hpp>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -218,4 +220,117 @@ NETMECH_TEST(connector_close_during_connect_creates_no_session)
     CHECK(!conn->connected());
 
     server->stop();
+}
+
+// ---------------------------------------------------------------------------
+// on_ready 必须在 server 记账之后触发：回调里 session_count() 能数到自己
+// ---------------------------------------------------------------------------
+namespace {
+
+class ReadyProbeHandler final : public RtspHandler {
+public:
+    std::atomic<RtspServer*> server{nullptr};
+    std::atomic<int>         observed{-1};
+
+    void on_ready(RtspSession&) override
+    {
+        if (auto* s = server.load()) {
+            observed.store(static_cast<int>(s->session_count()));
+        }
+    }
+    void on_request(RtspSession& s, const RtspRequest& req) override
+    {
+        s.send_response(ResponseBuilder(200, "OK").cseq(req.cseq()).build());
+    }
+};
+
+class ReadyProbeAcceptor final : public RtspAcceptor {
+public:
+    std::atomic<RtspServer*> server{nullptr};
+    mutable std::mutex mu;
+    std::shared_ptr<ReadyProbeHandler> last;
+
+    std::shared_ptr<RtspHandler> on_accept(const Endpoint&) override
+    {
+        auto h = std::make_shared<ReadyProbeHandler>();
+        h->server.store(server.load());
+        std::lock_guard<std::mutex> lk(mu);
+        last = h;
+        return h;
+    }
+    std::shared_ptr<ReadyProbeHandler> get() const
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        return last;
+    }
+};
+
+} // namespace
+
+NETMECH_TEST(server_on_ready_sees_itself_counted)
+{
+    auto acc = std::make_shared<ReadyProbeAcceptor>();
+
+    RtspServerConfig scfg;
+    scfg.local = {"127.0.0.1", 0};
+    auto server = RtspServer::create(scfg, acc);
+    REQUIRE(server != nullptr);
+    REQUIRE(!server->start());
+    acc->server.store(server.get());
+
+    auto ch = std::make_shared<ConnectorTestHandler>();
+    RtspConnectorConfig ccfg;
+    ccfg.remote = server->local();
+    auto conn = RtspConnector::create(ccfg, ch);
+    REQUIRE(conn != nullptr);
+    REQUIRE(!conn->connect());
+
+    REQUIRE(wait_until([&] { return ch->ready.load(); }, 3000ms));
+    REQUIRE(wait_until([&] {
+        const auto h = acc->get();
+        return h && h->observed.load() >= 0;
+    }, 3000ms));
+    CHECK_EQ(acc->get()->observed.load(), 1);
+
+    conn->close();
+    server->stop();
+}
+
+// ---------------------------------------------------------------------------
+// Runtime 注入：server / connector 都用应用给的 Runtime（1 条 io 线程）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(server_connector_use_injected_runtime)
+{
+    netmech::Runtime::Options opt;
+    opt.io_threads = 1;
+    auto rt = netmech::Runtime::create(opt);
+    REQUIRE(rt != nullptr);
+
+    auto acceptor = std::make_shared<EchoAcceptor>();
+
+    RtspServerConfig scfg;
+    scfg.local   = {"127.0.0.1", 0};
+    scfg.runtime = rt;
+    auto server = RtspServer::create(scfg, acceptor);
+    REQUIRE(server != nullptr);
+    REQUIRE(!server->start());
+
+    auto ch = std::make_shared<ConnectorTestHandler>();
+    RtspConnectorConfig ccfg;
+    ccfg.remote  = server->local();
+    ccfg.runtime = rt;
+    auto conn = RtspConnector::create(ccfg, ch);
+    REQUIRE(conn != nullptr);
+    REQUIRE(!conn->connect());
+
+    REQUIRE(wait_until([&] { return ch->ready.load(); }, 3000ms));
+    CHECK(rt->running());
+    CHECK_EQ(rt->io_threads(), std::size_t{1});
+    REQUIRE(wait_until([&] { return ch->responses.load() == 1; }, 3000ms));
+    CHECK_EQ(ch->last_status.load(), 200);
+
+    conn->close();
+    server->stop();
+    rt->shutdown();
+    CHECK(!rt->running());
 }
