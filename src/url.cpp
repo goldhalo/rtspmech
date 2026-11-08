@@ -58,7 +58,6 @@ ParsedUrl parse_url(std::string_view s) noexcept
         return u;
     }
 
-    const std::string_view host;
     std::string_view port_str;
 
     if (!hostport.empty() && hostport.front() == '[') {
