@@ -268,3 +268,28 @@ NETMECH_TEST(builder_does_not_duplicate_content_length)
     }
     CHECK_EQ(count, std::size_t{1});
 }
+
+// ---------------------------------------------------------------------------
+// Builder 的请求行 / 状态行同样不能注入 CRLF
+//
+//   header() 早就防了头名/值，但 method / uri / reason 以前是原样拼接：
+//       RequestBuilder("OPTIONS", "rtsp://h/x\r\nX-Evil: 1")
+//   会拼出两行头。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(builders_strip_crlf_from_request_line)
+{
+    RequestBuilder req("OPTIONS\r\nX-Evil: 1", "rtsp://h/x\r\nX-Evil: 2");
+    req.cseq(1);
+    const std::string rw = req.build();
+    CHECK(rw.find("\r\nX-Evil") == std::string::npos);
+
+    ResponseBuilder resp(200, "OK\r\nX-Evil: 3");
+    resp.cseq(1);
+    const std::string sw = resp.build();
+    CHECK(sw.find("\r\nX-Evil") == std::string::npos);
+
+    // 正常输入不受影响（逐字节还是原来那两行）
+    RequestBuilder ok("OPTIONS", "rtsp://h/x");
+    ok.cseq(7);
+    CHECK_EQ(ok.build(), std::string("OPTIONS rtsp://h/x RTSP/1.0\r\nCSeq: 7\r\n\r\n"));
+}

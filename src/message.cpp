@@ -11,6 +11,24 @@
 
 namespace rtspmech {
 
+namespace {
+
+/// 请求行 / 状态行里的危险字符处理。
+///
+/// `header()` 早就防了 header injection（头名拒绝 CR/LF/冒号、值里的 CR/LF
+/// 换空格），但**方法名 / URI / reason 这三处一直没防**：
+///   RequestBuilder("OPTIONS", "rtsp://h/x\r\nX-Evil: 1")
+/// 会拼出两行头。这里统一把 CR/LF/NUL 换成空格 —— 语义上不改变可见字符，
+/// 但绝不可能再拼出新的一行。
+void append_line_component(std::string& out, std::string_view value)
+{
+    for (char c : value) {
+        out.push_back((c == '\r' || c == '\n' || c == '\0') ? ' ' : c);
+    }
+}
+
+} // namespace
+
 // =============================================================================
 //  RtspRequest
 // =============================================================================
@@ -65,9 +83,9 @@ std::string_view RtspResponse::www_authenticate() const noexcept
 RequestBuilder::RequestBuilder(std::string_view method, std::string_view uri)
 {
     m_head.reserve(128);
-    m_head.append(method);
+    append_line_component(m_head, method);
     m_head.push_back(' ');
-    m_head.append(uri);
+    append_line_component(m_head, uri);
     m_head.append(" RTSP/1.0\r\n");
 }
 
@@ -152,7 +170,7 @@ ResponseBuilder::ResponseBuilder(int status, std::string_view reason)
     m_head.append("RTSP/1.0 ");
     m_head.append(std::to_string(status));
     m_head.push_back(' ');
-    m_head.append(reason);
+    append_line_component(m_head, reason);   // reason 同样不能带 CRLF
     m_head.append("\r\n");
 }
 

@@ -179,3 +179,43 @@ NETMECH_TEST(public_api_server_and_connector_roundtrip)
     conn.reset();
     server.reset();
 }
+
+// ---------------------------------------------------------------------------
+// connect 期间 close()：之后即使 TCP 已连上，也不能再冒出一个会话
+//
+//   以前 on_linkup 不检查"是否已关闭"，照样 make_conn_adapter → 造会话 →
+//   回调 on_ready。应用已经放弃连接，却凭空收到一个会话。
+//
+//   判定用不变量：**不允许出现"ready=true 且一直不 closed"**。
+//   （linkup 若在 close 之前赢得竞争，会话是合法的，close 会补上 on_close。）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(connector_close_during_connect_creates_no_session)
+{
+    auto acceptor = std::make_shared<EchoAcceptor>();
+
+    RtspServerConfig scfg;
+    scfg.local = {"127.0.0.1", 0};
+    auto server = RtspServer::create(scfg, acceptor);
+    REQUIRE(server != nullptr);
+    REQUIRE(!server->start());
+
+    auto ch = std::make_shared<ConnectorTestHandler>();
+    RtspConnectorConfig ccfg;
+    ccfg.remote = server->local();
+
+    auto conn = RtspConnector::create(ccfg, ch);
+    REQUIRE(conn != nullptr);
+    REQUIRE(!conn->connect());
+    conn->close();   // 立刻取消（此时 conn 可能还没建立）
+
+    // 给晚到的 linkup 足够时间：若它还是造了会话，ready 会变 true 而没有 on_close
+    REQUIRE(wait_until([&] {
+        return ch->ready.load() && ch->closed.load();
+    }, 500ms) || (!ch->ready.load() && !ch->closed.load()));
+
+    CHECK_MSG(!(ch->ready.load() && !ch->closed.load()),
+              "close 之后不应再出现活着的会话（late linkup 未被拒绝）");
+    CHECK(!conn->connected());
+
+    server->stop();
+}

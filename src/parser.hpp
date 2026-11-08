@@ -20,7 +20,9 @@
 namespace rtspmech {
 namespace detail {
 
-/// 头部字段数量上限。RTSP 头部没那么多，64 足够；超出的部分丢弃。
+/// 头部字段数量上限。RTSP 头部没那么多，64 足够。
+/// 超过上限时 picohttpparser 直接返回失败 —— 整条消息判非法、连接被关闭
+/// （不是"丢弃多余的头"；RTSP 里这种消息通常意味着流已错位）。
 constexpr std::size_t kMaxHeaders = 64;
 
 /// 解析结果（借用视图，指向传入的 data）。
