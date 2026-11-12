@@ -300,3 +300,40 @@ NETMECH_TEST(framer_tolerates_space_before_content_length_colon)
     CHECK_EQ(fr.len, msg.size());
     CHECK_EQ(f.buffered(), std::size_t{0});
 }
+
+// ---------------------------------------------------------------------------
+// 冲突的重复 Content-Length 按非法处理（m-1，RFC 7230 §3.3.3）：
+// 两个不同的值会让不同接收方各取所需 → 流错位。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(framer_rejects_conflicting_duplicate_content_length)
+{
+    const std::string msg =
+        "ANNOUNCE rtsp://x RTSP/1.0\r\nCSeq: 1\r\n"
+        "Content-Length: 5\r\nContent-Length: 9\r\n\r\nhello";
+
+    Framer f;
+    const auto b = to_bytes(msg);
+    f.append(b.data(), b.size());
+
+    Framer::Frame fr;
+    CHECK(f.next(fr) == Framer::Status::too_large);   // 非法 → 上层断链
+}
+
+// ---------------------------------------------------------------------------
+// 值相同的重复 Content-Length 允许（RFC 7230 容忍）。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(framer_allows_identical_duplicate_content_length)
+{
+    const std::string msg =
+        "ANNOUNCE rtsp://x RTSP/1.0\r\nCSeq: 1\r\n"
+        "Content-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
+
+    Framer f;
+    const auto b = to_bytes(msg);
+    f.append(b.data(), b.size());
+
+    Framer::Frame fr;
+    REQUIRE(f.next(fr) == Framer::Status::ok);
+    CHECK_EQ(fr.len, msg.size());
+    CHECK_EQ(f.buffered(), std::size_t{0});
+}

@@ -83,6 +83,8 @@ std::size_t Framer::parse_content_length(std::size_t head_end) const noexcept
     // 在 [0, head_end) 里逐行找 Content-Length
     const std::uint8_t* p = m_buf.data() + m_pos;
     std::size_t line = 0;
+    bool        found = false;
+    std::size_t found_value = 0;
 
     while (line < head_end) {
         // 一行到下一个 CRLF。
@@ -123,12 +125,22 @@ std::size_t Framer::parse_content_length(std::size_t head_end) const noexcept
                 }
                 value = value * 10 + (p[i] - '0');
             }
-            return has_digit ? value : static_cast<std::size_t>(-1);
+            if (!has_digit) {
+                return static_cast<std::size_t>(-1);
+            }
+            // ★ 冲突的重复 Content-Length 按非法处理（RFC 7230 §3.3.3 的
+            //   拒绝态度）：两个不同的值会让不同接收方各取所需 → 流错位。
+            //   值相同的重复头允许（继续扫完，确认没有冲突的）。
+            if (found && value != found_value) {
+                return static_cast<std::size_t>(-1);
+            }
+            found = true;
+            found_value = value;
         }
 
         line = eol + 2;
     }
-    return 0;   // 没有这个头 → 0
+    return found ? found_value : 0;   // 没有这个头 → 0
 }
 
 Framer::Status Framer::next(Frame& out)

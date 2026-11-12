@@ -230,9 +230,9 @@ endif()
 #  netmech、Threads 都由导出的 target 带着走；picohttpparser 已编进本库，
 #  **不再作为独立的库随包安装**。
 #
-#  注意：netmech / rtspmech 的公共头都暴露了对方的类型
-#  （session.hpp 直接 #include <netmech/conn.hpp>），所以 netmech 那个包
-#  必须一起装 —— 由 Config 里的 find_dependency 自动找。
+#  注意：rtspmech 的公共头**不** include netmech（只前向声明），
+#  但实现链接 netmech，导出的 target 带着 netmech::netmech ——
+#  所以 netmech 那个包必须一起装，由 Config 里的 find_dependency 自动找。
 #
 #  默认前缀：Linux -> /usr/local，Windows -> C:/Program Files/rtspmech
 # ---------------------------------------------------------------------------

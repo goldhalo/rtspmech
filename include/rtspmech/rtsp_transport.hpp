@@ -81,15 +81,21 @@ struct RtspTransport {
 
 /// 判断一个 interleaved 载荷是 RTCP 还是 RTP。
 ///
-/// 规则：RTP 第 2 字节是 `M(1) + PT(7)`，PT 最大 127；RTCP 的 PT 是 200~208
-/// （单独占 8 位）：200 SR / 201 RR / 202 SDES / 203 BYE / 204 APP /
-/// 205 RTPFB（NACK）/ 206 PSFB（PLI、FIR）/ 207 XR / 208 SDES。
+/// 规则：取第 2 字节整字节判 200~208：200 SR / 201 RR / 202 SDES /
+/// 203 BYE / 204 APP / 205 RTPFB（NACK）/ 206 PSFB（PLI、FIR）/ 207 XR /
+/// 208 SDES。
 ///
 /// @note 205~208 也必须算 RTCP：**RTSP over TCP 下对端发 NACK/PLI 是常态**，
 ///       漏判会让它们被当成 RTP 送进解包器。
 ///
 /// @note 这个判断同时适用"RTP/RTCP 分两个 channel"（标准）和"复用同一个
 ///       channel"（部分设备）两种情形。
+///
+/// @warning **RFC 5761 的固有限制**：RTP 第 2 字节是 M(1)+PT(7)，当 M=1
+///       且 PT∈72~80 时字节值也落在 200~208，会被误判为 RTCP。算法本身
+///       无法完全区分 —— RFC 5761 §4 靠"复用场景禁用 RTP PT 72~76"规避。
+///       已协商出独立 RTCP 通道（ch2）时，**优先按通道号判定**，本函数
+///       仅作同通道复用时的兜底。
 [[nodiscard]] RTSPMECH_API bool is_rtcp(const std::uint8_t* data, std::size_t len) noexcept;
 
 } // namespace rtspmech

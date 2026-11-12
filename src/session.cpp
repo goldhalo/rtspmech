@@ -236,6 +236,15 @@ public:
 
     [[nodiscard]] netmech::Conn* conn() const noexcept { return m_conn.get(); }
 
+    /// 释放连接引用（由 ConnAdapter 在 netmech 的 on_close 里调）。
+    ///
+    /// ★ netmech 契约（iohandler.hpp）：handler 若持有 shared_ptr<Conn>，
+    ///   必须在 on_close 里释放。否则 Conn::Impl::retired_handler 强持
+    ///   ConnAdapter → session → impl → m_conn → Conn::Impl 成环，
+    ///   **每条连接永久泄漏**（连接表摘除了也看不出来）。必须在
+    ///   close() 之后调（close 内部还要用 m_conn）。
+    void release_conn() noexcept { m_conn.reset(); }
+
 private:
     void dispatch_text(const detail::Framer::Frame& fr)
     {
@@ -395,6 +404,9 @@ public:
     {
         if (m_impl) {
             m_impl->close();
+            // ★ 破环（M-1）：netmech 要求 handler 在 on_close 释放 conn，
+            //   否则 retired_handler → 适配器 → 会话 → conn 成环泄漏。
+            m_impl->release_conn();
         }
         // ★ 反向通知：让 server 把这条连接从记账表里摘掉。
         //   以前只有 on_conn、没有 on_gone，于是 `conns` 只增不减 ——
@@ -402,6 +414,11 @@ public:
         if (m_on_gone) {
             m_on_gone(m_conn_raw);
         }
+        m_conn_raw = nullptr;
+        // 连接已关：适配器不再保活会话与应用 handler（它们可能还被
+        // 应用自己的表持有，这里只放弃本层的一份强引用）。
+        m_impl.reset();
+        m_session.reset();
     }
 
 private:
@@ -423,6 +440,15 @@ std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
     }
     return std::make_shared<ConnAdapter>(std::move(handler), std::move(on_conn),
                                          std::move(on_gone));
+}
+
+bool post_to_session(RtspSession& s, std::function<void()> fn, bool allow_inline)
+{
+    if (!s.m_impl || !s.m_impl->conn() || !fn) {
+        return false;
+    }
+    s.m_impl->conn()->post(std::move(fn), allow_inline);
+    return true;
 }
 
 } // namespace detail

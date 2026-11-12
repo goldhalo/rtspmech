@@ -434,3 +434,140 @@ NETMECH_TEST(client_parse_url_supports_ipv6_literal)
     CHECK(!parse_url("rtsp://h:999999/").ok);
     CHECK(!parse_url("http://h/").ok);
 }
+
+// ---------------------------------------------------------------------------
+// M-1 回归：连接关闭后 handler 必须被释放（每连接泄漏断言）。
+//
+// 以前 Impl 在 on_close 后仍强持 shared_ptr<Conn>，与 netmech 的
+// retired_handler 成环：handler 永远不析构。用 weak_ptr 观察是否过期。
+// ---------------------------------------------------------------------------
+namespace {
+
+class LeakAcceptor final : public RtspAcceptor {
+public:
+    std::shared_ptr<RtspHandler> on_accept(const Endpoint&) override
+    {
+        auto h = std::make_shared<ServerStub>();
+        std::lock_guard<std::mutex> lk(mu);
+        issued.push_back(h);
+        return h;
+    }
+    bool all_released()
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (issued.empty()) {
+            return false;
+        }
+        for (const auto& w : issued) {
+            if (!w.expired()) {
+                return false;
+            }
+        }
+        return true;
+    }
+    std::mutex                            mu;
+    std::vector<std::weak_ptr<RtspHandler>> issued;
+};
+
+} // namespace
+
+NETMECH_TEST(session_handler_released_after_close)
+{
+    auto acceptor = std::make_shared<LeakAcceptor>();
+    RtspServerConfig scfg;
+    scfg.local = {"127.0.0.1", 0};
+    auto server = RtspServer::create(scfg, acceptor);
+    REQUIRE(server != nullptr);
+    REQUIRE(!server->start());
+    const std::uint16_t port = server->local().port();
+
+    RtspClient::Config ccfg;
+    ccfg.url       = url_for(port);
+    ccfg.transport = TransportPreference::interleaved;
+    auto handler = std::make_shared<ClientStub>();
+    std::error_code ec;
+    auto client = RtspClient::create(ccfg, handler, ec);
+    REQUIRE(!ec);
+    REQUIRE(client != nullptr);
+    REQUIRE(wait_until([&] { return handler->playing.load(); }));
+
+    client->teardown();
+    REQUIRE(wait_until([&] { return handler->closed.load(); }));
+    client.reset();
+
+    // ★ 修之前这里永远超时：retired_handler → 适配器 → handler 成环泄漏
+    CHECK_MSG(wait_until([&] { return acceptor->all_released(); }),
+              "连接关闭后 handler 必须被释放（每连接泄漏）");
+    server->stop();
+}
+
+// ---------------------------------------------------------------------------
+// C-1 回归：连接活跃时释放最后一个 shared_ptr<RtspClient> 不得 UAF。
+//
+// 以前 Impl::owner 是裸指针，Impl 被 netmech 强持、生命周期长于
+// client；io 线程的关闭回调经 facade() 解引用已释放对象。
+// 改 weak_ptr 后回调先 lock，过期则跳过。ASan 下跑多轮压力。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(client_destroy_while_connection_active)
+{
+    Rig rig;
+    REQUIRE(rig.start());
+
+    for (int round = 0; round < 10; ++round) {
+        RtspClient::Config ccfg;
+        ccfg.url       = url_for(rig.port);
+        ccfg.transport = TransportPreference::interleaved;
+        auto handler = std::make_shared<ClientStub>();
+        std::error_code ec;
+        auto client = RtspClient::create(ccfg, handler, ec);
+        REQUIRE(!ec);
+        REQUIRE(client != nullptr);
+        REQUIRE(wait_until([&] { return handler->playing.load(); }));
+
+        // ★ 不等 teardown、不等 closed：流量还在跑时直接释放门面
+        client.reset();
+
+        // 给 io 线程时间跑关闭回调（修之前这里会踩已释放内存）
+        std::this_thread::sleep_for(20ms);
+    }
+    rig.server->stop();
+}
+
+// ---------------------------------------------------------------------------
+// M-2 回归：应用线程（非 io）调 teardown / retry 安全且生效。
+//
+// 以前状态机成员无同步，跨线程读写是 UB；现在入口统一 post 到
+// 连接的 io 线程，与 on_response 串行。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(client_teardown_and_retry_from_app_thread)
+{
+    Rig rig;
+    REQUIRE(rig.start());
+    rig.stub->require_auth = true;
+
+    RtspClient::Config ccfg;
+    ccfg.url       = url_for(rig.port);
+    ccfg.transport = TransportPreference::interleaved;
+    auto handler = std::make_shared<ClientStub>();   // 不自动 retry
+    std::error_code ec;
+    auto client = RtspClient::create(ccfg, handler, ec);
+    REQUIRE(!ec);
+    REQUIRE(client != nullptr);
+    REQUIRE(wait_until([&] { return handler->unauthorized.load() >= 1; }));
+
+    // ★ 从独立应用线程重放（"问用户拿凭据"的典型场景）
+    std::thread app([&] {
+        CHECK(client->retry_with_credentials("user", "pass"));
+    });
+    app.join();
+    REQUIRE(wait_until([&] { return handler->playing.load(); }));
+    CHECK(rig.stub->auth_seen.load());
+
+    // ★ 从独立应用线程 teardown
+    std::thread app2([&] { client->teardown(); });
+    app2.join();
+    CHECK(wait_until([&] { return rig.stub->teardown_seen.load(); }));
+    REQUIRE(wait_until([&] { return handler->closed.load(); }));
+
+    rig.server->stop();
+}

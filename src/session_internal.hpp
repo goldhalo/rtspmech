@@ -34,5 +34,15 @@ RTSPMECH_API std::shared_ptr<netmech::ConnHandler> make_conn_adapter(
     std::function<void(std::shared_ptr<netmech::Conn>)> on_conn,
     std::function<void(netmech::Conn*)>                  on_gone = nullptr);
 
+/// 把任务投递到会话所属连接的 io 线程执行。
+///
+/// RtspClient 的状态机单线程化用：应用线程入口（teardown/retry/abort）
+/// 统一 post 过来，与 on_response 等 io 回调串行，状态无需加锁。
+/// allow_inline 语义同 netmech::Conn::post（io 线程上同步执行）。
+///
+/// @return false = 会话为空 / 无连接 / 任务为空（未投递）。
+RTSPMECH_API bool post_to_session(RtspSession& s, std::function<void()> fn,
+                                  bool allow_inline = true);
+
 } // namespace detail
 } // namespace rtspmech

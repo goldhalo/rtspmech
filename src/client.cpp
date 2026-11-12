@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <string_view>
@@ -106,7 +107,6 @@ public:
     std::shared_ptr<ClientHandler>    handler;
 
     std::shared_ptr<netmech::Mechanism> mech;
-    std::shared_ptr<RtspSession>        session;
 
     std::atomic<bool>  playing{false};
     /// 已发出 TEARDOWN、等对端响应后关闭（见 teardown() 的说明）。
@@ -116,20 +116,40 @@ public:
     ///       用普通 bool 是标准的数据竞争（TSan 会直接报）。
     std::atomic<bool>  teardown_pending{false};
     std::atomic<bool>  failed{false};
-    std::string        session_id;
-    std::string        sdp;
-    std::uint16_t      server_rtp_port = 0;
-    std::uint16_t      server_rtcp_port = 0;
-    std::uint16_t      client_rtp_port = 0;
+
+    // ---- 状态机状态（M-2：单线程化）----
+    //
+    // 所有**变更**都在连接的 io 线程上发生：on_response 等回调天然在
+    // io 线程；应用线程入口（teardown/retry/abort）统一 post 过来。
+    // 因此 tracks/track_index/step/last_status 这些纯内部状态无需加锁。
+    //
+    // 例外是**跨线程可读**的几项：session_id/sdp（公共 getter 返回快照）、
+    // session 句柄（应用线程入口要读）、端口（getter 读）——前两者用
+    // state_mu 保护（写锁写、读锁拷），端口用原子。
+    std::mutex         state_mu;
+    std::string        session_id;      ///< 受 state_mu 保护
+    std::string        sdp;             ///< 受 state_mu 保护
+    std::atomic<std::uint16_t> server_rtp_port{0};
+    std::atomic<std::uint16_t> server_rtcp_port{0};
+    std::uint16_t      client_rtp_port = 0;   ///< 仅 io 线程访问
     std::atomic<bool>  recording{false};
 
     detail::ParsedUrl          url;
-    std::vector<std::string> tracks;
-    std::size_t        track_index = 0;
-    int                last_status = 0;
+    std::vector<std::string> tracks;      ///< 仅 io 线程访问
+    std::size_t        track_index = 0;   ///< 仅 io 线程访问
+    int                last_status = 0;   ///< 仅 io 线程访问
 
     enum class Step { options, describe, announce, setup, play, record, done };
-    Step step = Step::options;
+    Step step = Step::options;            ///< 仅 io 线程访问
+
+    /// 会话句柄：on_ready（io 线程）写入，应用线程入口读取 → state_mu 保护。
+    std::shared_ptr<RtspSession> session;
+
+    std::shared_ptr<RtspSession> session_snapshot()
+    {
+        std::lock_guard<std::mutex> lk(state_mu);
+        return session;
+    }
 
     // ---- netmech::Linkable ----
 
@@ -154,7 +174,10 @@ public:
 
     void on_ready(RtspSession& s) override
     {
-        session = s.shared_from_this();   // 适配器持有它，这里只是拿一份句柄
+        {
+            std::lock_guard<std::mutex> lk(state_mu);
+            session = s.shared_from_this();   // 适配器持有它，这里只是拿一份句柄
+        }
         // 推流模式没有 DESCRIBE，track 列表从自己的 SDP 里取（或默认一个）
         if (cfg.mode == ClientMode::push) {
             tracks = extract_controls(cfg.sdp);
@@ -179,10 +202,13 @@ public:
         //   实际结局几乎总是"停在这里直到对端超时"。
         if (resp.status == 401) {
             if (handler) {
-                handler->on_unauthorized(
-                    facade(),
-                    std::string_view(resp.www_authenticate().data(),
-                                     resp.www_authenticate().size()));
+                auto h = handler;
+                with_client([&](RtspClient& c) {
+                    h->on_unauthorized(
+                        c,
+                        std::string_view(resp.www_authenticate().data(),
+                                         resp.www_authenticate().size()));
+                });
             }
             return;
         }
@@ -211,7 +237,10 @@ public:
 
         case Step::describe:
             if (resp.status != 200) { fail("DESCRIBE", std::error_code{}, resp.status); return; }
-            sdp.assign(reinterpret_cast<const char*>(resp.body.data()), resp.body.size());
+            {
+                std::lock_guard<std::mutex> lk(state_mu);
+                sdp.assign(reinterpret_cast<const char*>(resp.body.data()), resp.body.size());
+            }
             tracks = extract_controls(sdp);
             if (tracks.empty()) {
                 tracks.emplace_back("trackID=0");
@@ -227,15 +256,18 @@ public:
             RtspTransport t;
             if (parse_transport(resp.header("Transport"), t)) {
                 if (t.mode == TransportMode::udp) {
-                    server_rtp_port  = t.server_rtp_port;
-                    server_rtcp_port = t.server_rtcp_port;
+                    server_rtp_port.store(t.server_rtp_port);
+                    server_rtcp_port.store(t.server_rtcp_port);
                     if (client_rtp_port == 0) {
                         client_rtp_port = t.client_rtp_port;
                     }
                 }
             }
-            if (session_id.empty()) {
-                session_id.assign(resp.session().data(), resp.session().size());
+            {
+                std::lock_guard<std::mutex> lk(state_mu);
+                if (session_id.empty()) {
+                    session_id.assign(resp.session().data(), resp.session().size());
+                }
             }
 
             ++track_index;
@@ -255,14 +287,20 @@ public:
             if (resp.status != 200) { fail("RECORD", std::error_code{}, resp.status); return; }
             recording.store(true);
             step = Step::done;
-            if (handler) { handler->on_recording(facade()); }
+            if (handler) {
+                auto h = handler;
+                with_client([&](RtspClient& c) { h->on_recording(c); });
+            }
             break;
 
         case Step::play:
             if (resp.status != 200) { fail("PLAY", std::error_code{}, resp.status); return; }
             playing.store(true);
             step = Step::done;                // 以前这里先写了一次 step = play（无意义）
-            if (handler) { handler->on_playing(facade()); }
+            if (handler) {
+                auto h = handler;
+                with_client([&](RtspClient& c) { h->on_playing(c); });
+            }
             break;
 
         case Step::done:
@@ -283,7 +321,8 @@ public:
             // ★ 别丢 ec：中转/监控场景要靠它区分"对端正常 TEARDOWN 走了"
             //   和"链路被重置，该告警重连"。以前这里 `(void)ec` 后调的是
             //   无参版本，原因在这一层被彻底抹掉。
-            handler->on_closed(facade(), ec);
+            auto h = handler;
+            with_client([&](RtspClient& c) { h->on_closed(c, ec); });
         }
     }
 
@@ -372,16 +411,17 @@ public:
         }
     }
 
-    /// 401 的重放入口（公共 API 转进来）。
+    /// 401 的重放入口（公共 API post 到 io 线程后转进来）。
     bool retry_with_authorization(std::string_view header_value)
     {
-        if (!session || header_value.empty()
+        auto s = session_snapshot();
+        if (!s || header_value.empty()
             || failed.load(std::memory_order_acquire)
             || step == Step::done
-            || !session->is_open()) {
+            || !s->is_open()) {
             return false;
         }
-        send_current(*session, header_value);
+        send_current(*s, header_value);
         return true;
     }
 
@@ -392,21 +432,29 @@ public:
         }
         playing.store(false);
         if (handler) {
-            handler->on_failed(facade(), stage, ec, status);
+            auto h = handler;
+            with_client([&](RtspClient& c) { h->on_failed(c, stage, ec, status); });
         }
     }
 
-    RtspClient& facade();
+    /// 锁住 facade 再回调；已过期（client 已析构）则直接跳过（C-1）。
+    ///
+    /// 以前 owner 是裸指针：Impl 被 netmech 的 retired_handler 强持，
+    /// 生命周期长于 RtspClient；连接活跃时析构 client 后，io 线程的
+    /// 关闭回调经 facade() 解引用已释放对象 → UAF。改 weak_ptr 后
+    /// 回调期间持强引用：应用在回调里释放最后一份引用也安全。
+    template <typename F>
+    void with_client(F&& f)
+    {
+        if (auto c = owner_weak.lock()) {
+            f(*c);
+        }
+    }
+
     std::weak_ptr<RtspHandler> weak_of_this();
 
-    RtspClient* owner = nullptr;
+    std::weak_ptr<RtspClient> owner_weak;
 };
-
-// Impl 需要拿到外层的 RtspClient&（回调里要给应用）
-RtspClient& RtspClient::Impl::facade()
-{
-    return *owner;
-}
 
 std::weak_ptr<RtspHandler> RtspClient::Impl::weak_of_this()
 {
@@ -446,7 +494,8 @@ std::shared_ptr<RtspClient> RtspClient::create(const Config& cfg,
     impl->cfg     = cfg;
     impl->handler = std::move(handler);
     impl->url     = u;
-    impl->owner   = client.get();
+    // ★ 弱引用回填必须在 connect 之前：on_linkup 可能在另一个线程立即触发。
+    impl->owner_weak = client;
 
     impl->mech = netmech::Mechanism::create(netmech::Mechanism::Config{},
                                            cfg.runtime);
@@ -472,31 +521,37 @@ bool RtspClient::is_playing() const noexcept
     return m_impl && m_impl->playing.load();
 }
 
-const std::string& RtspClient::session_id() const noexcept
+std::string RtspClient::session_id() const
 {
-    static const std::string kEmpty;
-    return m_impl ? m_impl->session_id : kEmpty;
+    if (!m_impl) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lk(m_impl->state_mu);
+    return m_impl->session_id;
 }
 
-const std::string& RtspClient::sdp() const noexcept
+std::string RtspClient::sdp() const
 {
-    static const std::string kEmpty;
-    return m_impl ? m_impl->sdp : kEmpty;
+    if (!m_impl) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lk(m_impl->state_mu);
+    return m_impl->sdp;
 }
 
 std::uint16_t RtspClient::server_rtp_port() const noexcept
 {
-    return m_impl ? m_impl->server_rtp_port : 0;
+    return m_impl ? m_impl->server_rtp_port.load() : 0;
 }
 
 std::uint16_t RtspClient::server_udp_port() const noexcept
 {
-    return m_impl ? m_impl->server_rtp_port : 0;
+    return m_impl ? m_impl->server_rtp_port.load() : 0;
 }
 
 std::uint16_t RtspClient::server_rtcp_port() const noexcept
 {
-    return m_impl ? m_impl->server_rtcp_port : 0;
+    return m_impl ? m_impl->server_rtcp_port.load() : 0;
 }
 
 int RtspClient::channel() const noexcept
@@ -516,36 +571,54 @@ ClientMode RtspClient::mode() const noexcept
 
 RtspSession* RtspClient::session() noexcept
 {
-    return m_impl ? m_impl->session.get() : nullptr;
+    // 注意：返回裸指针仅供应用发请求/查状态；会话由 Impl 保活。
+    return m_impl ? m_impl->session_snapshot().get() : nullptr;
 }
 
 void RtspClient::teardown()
 {
-    // ★ 条件是"会话还活着"，不是"正在播放"。
-    //   以前看 `playing`，而**推流模式下它永远是 false**（ANNOUNCE→SETUP→RECORD
-    //   走完只置 recording）—— 于是推流客户端调 teardown() 什么都没发生，
-    //   而且没有任何错误提示，属于最难查的那种"静默失效"。
-    if (!m_impl || !m_impl->session || !m_impl->session->is_open()) {
+    if (!m_impl) {
         return;
     }
-    RequestBuilder b("TEARDOWN", m_impl->cfg.url);
-    if (!m_impl->session_id.empty()) {
-        b.header("Session", m_impl->session_id);
+    // ★ M-2：应用线程入口统一 post 到连接的 io 线程执行，与 on_response
+    //   串行，状态机全程单线程。io 线程上调用时 dispatch 同步执行，
+    //   行为与以前一致。
+    auto impl = m_impl;
+    auto s = impl->session_snapshot();
+    if (!s) {
+        return;   // 还没连上：没什么可拆的
     }
-    m_impl->session->send_request(b);
-    m_impl->playing.store(false);
-    m_impl->recording.store(false);
+    detail::post_to_session(*s, [impl] {
+        // ★ 条件是"会话还活着"，不是"正在播放"。
+        //   以前看 `playing`，而**推流模式下它永远是 false**（ANNOUNCE→SETUP→RECORD
+        //   走完只置 recording）—— 于是推流客户端调 teardown() 什么都没发生，
+        //   而且没有任何错误提示，属于最难查的那种"静默失效"。
+        auto sess = impl->session_snapshot();
+        if (!sess || !sess->is_open()) {
+            return;
+        }
+        RequestBuilder b("TEARDOWN", impl->cfg.url);
+        {
+            std::lock_guard<std::mutex> lk(impl->state_mu);
+            if (!impl->session_id.empty()) {
+                b.header("Session", impl->session_id);
+            }
+        }
+        sess->send_request(b);
+        impl->playing.store(false);
+        impl->recording.store(false);
 
-    // ★ **不能**在这里 `session->close()`。
-    //
-    //   netmech 的 `Conn::close()` 会 cancel 所有挂起的写（见 conn.hpp:
-    //   "cancel 所有挂起的读/写/保活定时器"），而 RTSP 的写是异步排队的 ——
-    //   紧接着关，刚发出去的 TEARDOWN 就在队列里被一起丢掉，对端永远收不到。
-    //   （这就是这个 bug 修完条件之后仍然"发不出去"的原因。）
-    //
-    //   改成等对端的响应：收到 200/454 时说明 TEARDOWN 确实写出去了，
-    //   那时再关才安全。对端要是连响应都不给，这条连接由应用/超时处理。
-    m_impl->teardown_pending.store(true, std::memory_order_release);
+        // ★ **不能**在这里 `session->close()`。
+        //
+        //   netmech 的 `Conn::close()` 会 cancel 所有挂起的写（见 conn.hpp:
+        //   "cancel 所有挂起的读/写/保活定时器"），而 RTSP 的写是异步排队的 ——
+        //   紧接着关，刚发出去的 TEARDOWN 就在队列里被一起丢掉，对端永远收不到。
+        //   （这就是这个 bug 修完条件之后仍然"发不出去"的原因。）
+        //
+        //   改成等对端的响应：收到 200/454 时说明 TEARDOWN 确实写出去了，
+        //   那时再关才安全。对端要是连响应都不给，这条连接由应用/超时处理。
+        impl->teardown_pending.store(true, std::memory_order_release);
+    });
 }
 
 bool RtspClient::retry_with_credentials(std::string_view username,
@@ -567,7 +640,20 @@ bool RtspClient::retry_with_credentials(std::string_view username,
 
 bool RtspClient::retry_with_authorization(std::string_view header_value)
 {
-    return m_impl && m_impl->retry_with_authorization(header_value);
+    if (!m_impl || header_value.empty()) {
+        return false;
+    }
+    auto impl = m_impl;
+    auto s = impl->session_snapshot();
+    if (!s || !s->is_open()) {
+        return false;
+    }
+    // ★ M-2：post 到 io 线程执行（io 线程上调用时同步）。
+    //   返回值语义：true = 重放任务已提交，false = 无可重放的会话。
+    std::string value(header_value);
+    return detail::post_to_session(*s, [impl, value = std::move(value)] {
+        (void)impl->retry_with_authorization(value);
+    });
 }
 
 void RtspClient::abort_unauthorized(std::string_view stage)
@@ -575,10 +661,20 @@ void RtspClient::abort_unauthorized(std::string_view stage)
     if (!m_impl) {
         return;
     }
+    auto impl = m_impl;
     // fail() 只认 const char*，这里拷一份保证生命周期
     const std::string name(stage);
-    m_impl->fail(name.c_str(), make_error_code(RtspErrc::unauthorized),
-                 m_impl->last_status);
+    auto s = impl->session_snapshot();
+    if (s) {
+        // ★ M-2：post 到 io 线程，last_status 的读取与状态机变更串行。
+        detail::post_to_session(*s, [impl, name] {
+            impl->fail(name.c_str(), make_error_code(RtspErrc::unauthorized),
+                       impl->last_status);
+        });
+    } else {
+        // 还没会话（连接中）：没有 io 回调在跑，failed 原子闸保证唯一回调。
+        impl->fail(name.c_str(), make_error_code(RtspErrc::unauthorized), 0);
+    }
 }
 
 } // namespace rtspmech

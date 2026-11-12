@@ -19,6 +19,7 @@
 #include "rtspmech/export.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <system_error>
@@ -29,11 +30,14 @@
 
 namespace rtspmech {
 
+class RtspSession;
+
 namespace detail {
 class ConnAdapter;   // netmech 侧的真实 ConnHandler，定义在 src/session.cpp
-} // namespace detail
 
-class RtspSession;
+/// 把任务投递到会话所属连接的 io 线程（RtspClient 状态机单线程化用）。
+bool post_to_session(RtspSession& s, std::function<void()> fn, bool allow_inline);
+} // namespace detail
 
 // =============================================================================
 //  消息视图（借用，零拷贝）
@@ -285,6 +289,7 @@ public:
     // 内部：由 detail::ConnAdapter 驱动（它才是 netmech 的 ConnHandler）。
     // 应用不要直接调用这些。
     friend class detail::ConnAdapter;
+    friend bool detail::post_to_session(RtspSession&, std::function<void()>, bool);
 
 private:
     RtspSession();

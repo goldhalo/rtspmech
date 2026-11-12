@@ -146,8 +146,10 @@ public:
     /// 推流模式下 RECORD 是否成功。
     [[nodiscard]] bool         is_recording() const noexcept;
     [[nodiscard]] ClientMode   mode() const noexcept;
-    [[nodiscard]] const std::string& session_id() const noexcept;
-    [[nodiscard]] const std::string& sdp() const noexcept;
+    /// 会话 ID / SDP 的**线程安全快照**（返回值拷贝）。
+    /// 状态机在 io 线程上推进，任意线程可读。
+    [[nodiscard]] std::string  session_id() const;
+    [[nodiscard]] std::string  sdp() const;
     [[nodiscard]] std::uint16_t server_rtp_port() const noexcept;
 
     /// 拿到底层会话（发 TEARDOWN、发媒体用）。
@@ -170,14 +172,18 @@ public:
     ///       以前这里判断的是"是否正在播放"，于是推流（RECORD）成功后调用
     ///       它会**静默返回**，什么都不做。
     /// @note 不需要告别而想直接断开，用 `session()->close()`。
+    /// @note **任意线程可调**：内部投递到连接的 io 线程执行，与状态机串行。
     void teardown();
 
     /// 收到 401 后，用 Basic 凭据重发**当前**那个请求。
     ///
     /// @param[in] username 用户名
     /// @param[in] password 密码
-    /// @return true  已重发（响应会照常回到回调）
-    /// @return false 没有可重发的请求（未连接 / 已完成 / 已失败）
+    /// @return true  重放任务已提交（响应会照常回到回调）
+    /// @return false 没有可重放的请求（未连接 / 已完成 / 已失败）
+    ///
+    /// @note **任意线程可调**：内部投递到连接的 io 线程执行（在 io 回调里
+    ///       调则同步执行）。"问用户拿凭据再重发"的跨线程场景安全。
     ///
     /// @par 为什么要这个接口
     ///  401 是"应用决定怎么办"的场景：要不要问用户、要不要换账号，库替不了。
@@ -194,6 +200,7 @@ public:
     /// 收到 401 后，用**原始的 Authorization 头值**重发当前请求。
     ///
     /// @param[in] header_value 完整的头值，例如 `Digest username="u", ...`
+    /// @note **任意线程可调**，语义同 `retry_with_credentials`。
     [[nodiscard]] bool retry_with_authorization(std::string_view header_value);
 
     /// 放弃当前请求：转入失败终态并回调 `on_failed(stage, unauthorized, 401)`。
@@ -202,6 +209,7 @@ public:
     ///
     /// @note 401 之后如果不想重试，**一定要调它**（或 teardown），否则客户端
     ///       会停在中途：`is_playing()` 是 false、`on_closed` 也不会来。
+    /// @note **任意线程可调**：内部投递到连接的 io 线程执行。
     void abort_unauthorized(std::string_view stage);
 
 private:

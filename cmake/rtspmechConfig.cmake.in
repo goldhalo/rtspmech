@@ -7,8 +7,8 @@
 #      find_package(rtspmech REQUIRED)
 #      target_link_libraries(app PRIVATE rtspmech::rtspmech)
 #
-#  需要先有 netmech 包：rtspmech 的公共头直接 #include <netmech/conn.hpp>，
-#  导出的 target 也带着 netmech::netmech。
+#  需要先有 netmech 包：rtspmech 的公共头不 include netmech（只前向声明），
+#  但实现链接 netmech，导出的 target 带着 netmech::netmech。
 # -----------------------------------------------------------------------------
 
 include(CMakeFindDependencyMacro)
